@@ -1,0 +1,10 @@
+[build]
+target = "msp430-none-elf"
+
+[unstable]
+build-std = ["core"]
+
+[target.msp430-none-elf]
+linker = "/Users/davidfalkner/ti/msp430-gcc-9.3.1.11_macos/bin/msp430-elf-gcc"
+rustflags = ["-C", "link-arg=-mmcu=msp430fr5969", "-C", "link-arg=-nostartfiles"]
+runner = "mspdebug tilib --"
