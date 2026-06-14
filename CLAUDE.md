@@ -12,8 +12,13 @@ Bare-metal Rust firmware for the **Texas Instruments MSP430FR5969** microcontrol
 # Build (requires nightly toolchain for build-std)
 cargo +nightly build
 
-# Flash and run via mspdebug
-cargo +nightly run
+# Flash via DSLite (TI debug server, runs under Rosetta on M-series Macs)
+/Applications/ti/ccs2051/ccs/ccs_base/DebugServer/bin/DSLite load \
+  -c /Users/davidfalkner/git/dave_ti/MSP430FR5969.ccxml \
+  -f /Users/davidfalkner/git/dave_ti/target/msp430-none-elf/debug/dave_ti
+
+# Flash and run via mspdebug (not currently working — mspdebug is arm64, TI's libmsp430 is x86_64)
+# cargo +nightly run
 
 # Check without building
 cargo +nightly check
@@ -32,3 +37,8 @@ Requires the **nightly** Rust toolchain (for `-Z build-std=core` on the `msp430-
 - `dave_ti/memory.x` — Linker script with memory map: RAM at 0x1C00 (2KB), FRAM at 0x4400 (48KB), interrupt vectors at 0xFF80, reset vector at 0xFFFE.
 
 **Runtime model:** No runtime startup code — `_start` is the direct reset vector entry point. The watchdog timer must be disabled first. A custom `#[panic_handler]` loops forever.
+
+## Shortcomings in the PAC crate
+
+- No critical-section implementation — your critical-section feature is declared but doesn't pull in an actual impl crate (like msp430-atomic). Peripherals::take() won't work without one.
+- No msp430-rt dependency — the rt feature copies device.x but doesn't depend on a runtime crate for the interrupt macro / vector table. Mature MSP430 PACs typically integrate with msp430-rt.
