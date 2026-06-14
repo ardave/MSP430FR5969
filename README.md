@@ -1,0 +1,2 @@
+# MSP430FR5969
+PAC + HAL for Texas Instruments MSP430FR5969
