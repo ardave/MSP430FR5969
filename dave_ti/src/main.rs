@@ -22,13 +22,25 @@ pub extern "C" fn _start() -> ! {
         .wdtctl()
         .write(|w| unsafe { w.bits(WDTPW | WDTHOLD) });
 
-    // Set P1.0 (red LED) as output
+    // Unlock GPIO pins (clear LOCKLPM5)
+    periph
+        .pmm
+        .pm5ctl0()
+        .modify(|_, w| w.locklpm5().clear_bit());
+
+    // Set P1.0 (LED2, red) as output
     periph
         .port_1_2
         .p1dir()
         .modify(|_, w| w.p1dir0().set_bit());
 
-    // Blink forever: toggle P1.0, delay ~500ms
+    // Set P4.6 (LED1, green) as output
+    periph
+        .port_3_4
+        .p4dir()
+        .modify(|_, w| w.p4dir6().set_bit());
+
+    // Blink forever: toggle both LEDs with a long delay
     loop {
         // Toggle P1.0
         periph
@@ -42,8 +54,20 @@ pub extern "C" fn _start() -> ! {
                 }
             });
 
-        // Busy-wait delay (~500ms at default ~1 MHz DCO)
-        delay(50_000);
+        // Toggle P4.6
+        periph
+            .port_3_4
+            .p4out()
+            .modify(|r, w| {
+                if r.p4out6().bit_is_set() {
+                    w.p4out6().clear_bit()
+                } else {
+                    w.p4out6().set_bit()
+                }
+            });
+
+        // Busy-wait delay (~1s at default ~1 MHz DCO)
+        delay(12_000);
     }
 }
 
