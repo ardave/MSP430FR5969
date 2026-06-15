@@ -5,7 +5,8 @@ edition = "2021"
 
 [features]
 rt = []
-critical-section = []
+critical-section = ["dep:critical-section"]
 
 [dependencies]
 vcell = "0.1"
+critical-section = { version = "1", optional = true }
