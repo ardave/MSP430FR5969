@@ -26,7 +26,9 @@ SECTIONS
 
     .bss : ALIGN(2)
     {
+        __bss_start = .;
         *(.bss .bss.*)
+        __bss_end = .;
     } > RAM
 
     .vectors : ALIGN(2)
