@@ -3,16 +3,33 @@
 version = 4
 
 [[package]]
+name = "critical-section"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
+
+[[package]]
 name = "dave_ti"
 version = "0.1.0"
 dependencies = [
+ "msp430",
  "pac",
+]
+
+[[package]]
+name = "msp430"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01a1f453b2c9a9d6a979971cb1d10406046cd5a8ccca3772c08a5b0adc4e3e1d"
+dependencies = [
+ "critical-section",
 ]
 
 [[package]]
 name = "pac"
 version = "0.1.0"
 dependencies = [
+ "critical-section",
  "vcell",
 ]
 

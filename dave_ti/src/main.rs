@@ -2,6 +2,10 @@
 #![no_main]
 
 use pac::Peripherals;
+// Force the msp430 rlib into the link so its critical-section `set_impl!`
+// symbols (_critical_section_1_0_acquire/_release) resolve the references
+// pulled in by pac's `Peripherals::take()`.
+use msp430 as _;
 
 // Watchdog password must be written to upper byte of WDTCTL
 const WDTPW: u16 = 0x5A00;
@@ -14,60 +18,34 @@ static RESET_VECTOR: unsafe extern "C" fn() -> ! = _start;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
-    let periph = unsafe { Peripherals::steal() };
+    // Use raw register addresses to bypass Peripherals::take() / critical-section
+    const WDTCTL: *mut u16 = 0x015C as *mut u16;
+    const PM5CTL0: *mut u16 = 0x0130 as *mut u16;
+    const P1OUT: *mut u8 = 0x0202 as *mut u8; // PORT_1_2 base 0x200 + offset 2
+    const P1DIR: *mut u8 = 0x0204 as *mut u8; // PORT_1_2 base 0x200 + offset 4
+    const P4OUT: *mut u8 = 0x0223 as *mut u8; // PORT_3_4 base 0x220 + offset 3
+    const P4DIR: *mut u8 = 0x0225 as *mut u8; // PORT_3_4 base 0x220 + offset 5
 
-    // Stop the watchdog timer
-    periph
-        .watchdog_timer
-        .wdtctl()
-        .write(|w| unsafe { w.bits(WDTPW | WDTHOLD) });
+    unsafe {
+        // Stop the watchdog timer
+        WDTCTL.write_volatile(WDTPW | WDTHOLD);
 
-    // Unlock GPIO pins (clear LOCKLPM5)
-    periph
-        .pmm
-        .pm5ctl0()
-        .modify(|_, w| w.locklpm5().clear_bit());
+        // Unlock GPIO pins (clear LOCKLPM5 bit)
+        let pm5 = PM5CTL0.read_volatile();
+        PM5CTL0.write_volatile(pm5 & !0x0001);
 
-    // Set P1.0 (LED2, red) as output
-    periph
-        .port_1_2
-        .p1dir()
-        .modify(|_, w| w.p1dir0().set_bit());
+        // Set P1.0 (LED2, red) as output
+        P1DIR.write_volatile(P1DIR.read_volatile() | 0x01);
 
-    // Set P4.6 (LED1, green) as output
-    periph
-        .port_3_4
-        .p4dir()
-        .modify(|_, w| w.p4dir6().set_bit());
+        // Set P4.6 (LED1, green) as output
+        P4DIR.write_volatile(P4DIR.read_volatile() | 0x40);
 
-    // Blink forever: toggle both LEDs with a long delay
-    loop {
-        // Toggle P1.0
-        periph
-            .port_1_2
-            .p1out()
-            .modify(|r, w| {
-                if r.p1out0().bit_is_set() {
-                    w.p1out0().clear_bit()
-                } else {
-                    w.p1out0().set_bit()
-                }
-            });
-
-        // Toggle P4.6
-        periph
-            .port_3_4
-            .p4out()
-            .modify(|r, w| {
-                if r.p4out6().bit_is_set() {
-                    w.p4out6().clear_bit()
-                } else {
-                    w.p4out6().set_bit()
-                }
-            });
-
-        // Busy-wait delay (~1s at default ~1 MHz DCO)
-        delay(12_000);
+        // Blink forever
+        loop {
+            P1OUT.write_volatile(P1OUT.read_volatile() ^ 0x01);
+            P4OUT.write_volatile(P4OUT.read_volatile() ^ 0x40);
+            delay(20_000);
+        }
     }
 }
 
