@@ -9,3 +9,4 @@ critical-section = ["pac/critical-section"]
 
 [dependencies]
 pac = { path = "../pac" }
+embedded-hal = "1.0"
