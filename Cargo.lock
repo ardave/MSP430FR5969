@@ -9,11 +9,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
 
 [[package]]
-name = "dave_ti"
+name = "embedded-hal"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "361a90feb7004eca4019fb28352a9465666b24f840f5c3cddf0ff13920590b89"
+
+[[package]]
+name = "hal"
 version = "0.1.0"
 dependencies = [
- "msp430",
+ "embedded-hal",
  "pac",
+]
+
+[[package]]
+name = "hal_consumer"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "msp430",
 ]
 
 [[package]]
@@ -31,6 +45,14 @@ version = "0.1.0"
 dependencies = [
  "critical-section",
  "vcell",
+]
+
+[[package]]
+name = "pac_consumer"
+version = "0.1.0"
+dependencies = [
+ "msp430",
+ "pac",
 ]
 
 [[package]]

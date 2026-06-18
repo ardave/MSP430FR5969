@@ -1,0 +1,12 @@
+[package]
+name = "hal"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+rt = ["pac/rt"]
+critical-section = ["pac/critical-section"]
+
+[dependencies]
+pac = { path = "../pac" }
+embedded-hal = "1.0"
