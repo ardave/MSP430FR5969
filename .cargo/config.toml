@@ -6,5 +6,33 @@ build-std = ["core"]
 
 [target.msp430-none-elf]
 linker = "/Users/davidfalkner/ti/msp430-gcc-9.3.1.11_macos/bin/msp430-elf-gcc"
-rustflags = ["-C", "link-arg=-mmcu=msp430fr5969", "-C", "link-arg=-nostartfiles", "-C", "link-arg=-T", "-C", "link-arg=memory.x"]
+rustflags = [
+    "-C", "link-arg=-mmcu=msp430fr5969",
+    "-C", "link-arg=-nostartfiles",
+    "-C", "link-arg=-T", "-C", "link-arg=memory.x",
+    # Drop unreferenced functions/data at link time. rustc emits one section per
+    # function, so this lets the linker garbage-collect code that is compiled
+    # but never called — notably the core::fmt formatting engine pulled in by
+    # the (unused) fmt::Write impls. Without it those ~30 KB overflow FRAM.
+    "-C", "link-arg=-Wl,--gc-sections",
+    # Once any multiply/divide code is used, libcore references the MSP430 EABI
+    # runtime routines. Division/remainder (__mspabi_divu/remu) live in libgcc;
+    # the multiply routines (__mspabi_mpyi/mpyl) live in the device-specific
+    # hardware-multiply library — libmul_f5 for the FR5969's F5-type MPY32.
+    # The gcc driver normally adds these from the -mmcu device support, but the
+    # custom rustc link invocation bypasses that, so add them explicitly in a
+    # group placed after the Rust objects (the gcc driver scans libgcc before
+    # libcore's references appear otherwise). `abort` (pulled in by
+    # compiler-builtins' mem routines) is provided by the binary itself to avoid
+    # dragging in newlib's libc and its syscall stubs.
+    # The Rust msp430-none-elf target emits baseline MSP430 (not MSP430X) code,
+    # so force gcc to select the matching `430/` multilib for libgcc/libmul_f5;
+    # -mmcu alone would pick the MSP430X variant and the link would fail with an
+    # ISA-mismatch error.
+    "-C", "link-arg=-mcpu=msp430",
+    "-C", "link-arg=-Wl,--start-group",
+    "-C", "link-arg=-lgcc",
+    "-C", "link-arg=-lmul_f5",
+    "-C", "link-arg=-Wl,--end-group",
+]
 runner = "/Applications/ti/ccs2051/ccs/ccs_base/DebugServer/bin/DSLite load -c MSP430FR5969.ccxml -f"
