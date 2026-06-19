@@ -1,5 +1,6 @@
 #![no_std]
 
+mod baud;
 pub mod gpio;
 pub mod serial;
 

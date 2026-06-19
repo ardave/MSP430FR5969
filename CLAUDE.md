@@ -22,9 +22,16 @@ cargo +nightly build
 
 # Check without building
 cargo +nightly check
+
+# Run the host-side baud-rate math tests (NOT on the msp430 target)
+cd baud-test && cargo +nightly test
 ```
 
 Requires the **nightly** Rust toolchain (for `-Z build-std=core` on the `msp430-none-elf` target). The TI MSP430 GCC toolchain must be installed — the linker path is hardcoded in `.cargo/config.toml`.
+
+## Testing
+
+Most firmware can only be validated on hardware, but pure logic is tested on the host. `baud-test/` is a small crate **detached from the workspace** (its own `[workspace]` table + `.cargo/config.toml` that overrides the target back to the host) that `include!`s the real `hal/src/baud.rs` and checks `compute_baud`/`ucbrs_lookup` against SLAU367P Table 30-5. Because it includes the actual driver source, a bad edit to `UCBRS_TABLE` or the algorithm fails the tests. The pass/fail criterion is the resulting average bit-timing error (< 2%), since the driver follows the datasheet *procedure* while Table 30-5 lists values from a separate lowest-error search — the two legitimately differ in some rows (mode choice near N≈16, and alternate `UCBRSx` bytes). Run with `cd baud-test && cargo +nightly test`. The host triple in `baud-test/.cargo/config.toml` is `aarch64-apple-darwin`; change it for other hosts.
 
 ## Architecture
 
@@ -33,6 +40,7 @@ Requires the **nightly** Rust toolchain (for `-Z build-std=core` on the `msp430-
 - `hal/` — Hardware Abstraction Layer crate built on top of the PAC. Re-exports `pac`, `embedded_hal`, `embedded_hal_nb`, and `embedded_io`. Passes through `rt` and `critical-section` features to the PAC. Modules: `gpio` (typed pins, `embedded-hal` digital traits) and `serial` (eUSCI_A UART, `embedded-hal-nb` + `embedded-io` traits).
 - `pac_consumer/` — Test/experimentation binary that exercises the PAC directly. Entry point is `_start()` in `src/main.rs`.
 - `hal_consumer/` — Test/experimentation binary that exercises the HAL. Minimal `_start()` entry point.
+- `baud-test/` — Host-target unit tests for the UART baud-rate math (see Testing below). Not part of the workspace.
 
 **Key configuration:**
 - `.cargo/config.toml` — Sets `msp430-none-elf` target, enables `build-std = ["core"]`, configures TI GCC linker and `mspdebug tilib` as the runner.
