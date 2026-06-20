@@ -6,3 +6,17 @@ members = [
     "pac_consumer",
 ]
 resolver = "3"
+
+# The MSP430FR5969 has only 48 KB of FRAM. An unoptimized debug build of any
+# binary that does arithmetic pulls in debug overflow-check panics, which in
+# turn drag in the ~30 KB `core::fmt` formatting engine — enough to overflow
+# FRAM. Optimize debug builds for size and drop overflow checks / unwinding so
+# the documented `cargo +nightly build` (debug) flow still produces flashable
+# firmware. Release already strips all of this.
+[profile.dev]
+opt-level = "s"
+overflow-checks = false
+panic = "abort"
+
+[profile.release]
+panic = "abort"

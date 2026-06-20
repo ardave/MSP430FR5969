@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![feature(asm_experimental_arch)]
 
 // The `msp430` crate provides the critical-section implementation for MSP430
 // (acquire: read SR then DINT+NOP, release: restore GIE if it was set).
@@ -13,8 +14,31 @@ const WDTHOLD: u16 = 0x0080;
 #[unsafe(link_section = ".reset_vector")]
 static RESET_VECTOR: unsafe extern "C" fn() -> ! = _start;
 
+/// Reset entry point.
+///
+/// PITFALL: the MSP430 does **not** initialize the stack pointer (R1) in
+/// hardware on reset, and this project has no crt0/`msp430-rt` to do it for us.
+/// If the very first thing that runs is ordinary compiled code, its prologue
+/// will `push`/`sub` against whatever garbage R1 holds at reset, scribbling over
+/// random memory. The symptom is *intermittent* corruption that changes shape
+/// with each build and each reset (the reset-time SP varies), so it is easily
+/// mistaken for a peripheral bug.
+///
+/// The cure: this is a `#[naked]` function, so the compiler emits no prologue.
+/// Its first instruction loads SP with `__stack_top` (top of RAM, from
+/// `memory.x`); only then do we tail-call the real entry, which never returns.
+/// Every `_start` in this workspace must follow this pattern.
+#[unsafe(naked)]
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
+    core::arch::naked_asm!(
+        "mov #__stack_top, r1",
+        "br  #{main}",
+        main = sym rust_main,
+    )
+}
+
+extern "C" fn rust_main() -> ! {
     // Stop the watchdog before anything else — must use raw access because
     // Peripherals::take() itself enters a critical section, and the watchdog
     // will fire if we wait for the PAC setup.
@@ -45,7 +69,8 @@ pub extern "C" fn _start() -> ! {
     // Unlock GPIO pins (clear LOCKLPM5 bit in PM5CTL0)
     p.pmm.pm5ctl0().modify(|_, w| w.locklpm5().clear_bit());
 
-    // Set P1.0 (LED2, red) and P4.6 (LED1, green) as outputs
+    // Set P1.0 (LED2, GREEN) and P4.6 (LED1, RED) as outputs.
+    // (Colours verified on hardware — opposite of the commonly-assumed mapping.)
     p.port_1_2.p1dir().modify(|_, w| w.p1dir0().set_bit());
     p.port_3_4.p4dir().modify(|_, w| w.p4dir6().set_bit());
 

@@ -10,3 +10,8 @@ critical-section = ["pac/critical-section"]
 [dependencies]
 pac = { path = "../pac" }
 embedded-hal = "1.0"
+# Non-blocking serial traits (serial::Read / serial::Write) — the embedded-hal
+# project's UART abstraction. Re-exports the `nb` crate it builds on.
+embedded-hal-nb = "1.0"
+# Blocking, byte-stream I/O traits (Read / Write / ReadReady / WriteReady).
+embedded-io = "0.6"

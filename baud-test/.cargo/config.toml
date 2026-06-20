@@ -1,0 +1,11 @@
+# Override the repo-root .cargo/config.toml so this crate builds and runs on the
+# host (the parent config targets msp430-none-elf with build-std, which can't
+# run tests). The host triple is detected by leaving [build].target unset here —
+# but the parent sets it, so we must name it explicitly.
+[build]
+target = "aarch64-apple-darwin"
+
+# Neutralize the inherited `build-std = ["core"]` so cargo uses the prebuilt host
+# sysroot (std + libtest) instead of trying to build core from source.
+[unstable]
+build-std = ["std"]

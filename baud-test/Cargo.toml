@@ -1,0 +1,18 @@
+# Standalone host-target test for the eUSCI_A baud-rate math.
+#
+# Detached from the main workspace (note the empty [workspace] table) and given
+# its own .cargo/config.toml so it builds for the host instead of inheriting the
+# repo's msp430-none-elf target. It `include!`s the REAL hal/src/baud.rs source,
+# so an incorrect edit to UCBRS_TABLE or compute_baud fails these tests.
+#
+# Run with:  cd baud-test && cargo test
+[package]
+name = "baud-test"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"
