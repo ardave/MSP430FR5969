@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
-#![feature(asm_experimental_arch)]
+
+use msp430_rt::entry;
 
 // The `msp430` crate provides the critical-section implementation for MSP430
 // (acquire: read SR then DINT+NOP, release: restore GIE if it was set).
@@ -10,56 +11,24 @@ use msp430 as _;
 const WDTPW: u16 = 0x5A00;
 const WDTHOLD: u16 = 0x0080;
 
-#[used]
-#[unsafe(link_section = ".reset_vector")]
-static RESET_VECTOR: unsafe extern "C" fn() -> ! = _start;
-
-/// Reset entry point.
+/// Firmware entry point.
 ///
-/// PITFALL: the MSP430 does **not** initialize the stack pointer (R1) in
-/// hardware on reset, and this project has no crt0/`msp430-rt` to do it for us.
-/// If the very first thing that runs is ordinary compiled code, its prologue
-/// will `push`/`sub` against whatever garbage R1 holds at reset, scribbling over
-/// random memory. The symptom is *intermittent* corruption that changes shape
-/// with each build and each reset (the reset-time SP varies), so it is easily
-/// mistaken for a peripheral bug.
-///
-/// The cure: this is a `#[naked]` function, so the compiler emits no prologue.
-/// Its first instruction loads SP with `__stack_top` (top of RAM, from
-/// `memory.x`); only then do we tail-call the real entry, which never returns.
-/// Every `_start` in this workspace must follow this pattern.
-#[unsafe(naked)]
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
-    core::arch::naked_asm!(
-        "mov #__stack_top, r1",
-        "br  #{main}",
-        main = sym rust_main,
-    )
-}
-
-extern "C" fn rust_main() -> ! {
-    // Stop the watchdog before anything else — must use raw access because
-    // Peripherals::take() itself enters a critical section, and the watchdog
-    // will fire if we wait for the PAC setup.
+/// `#[entry]` (from msp430-rt) names the function the runtime calls after reset.
+/// msp430-rt now owns everything `_start` used to do by hand: its `Reset`
+/// handler loads the stack pointer from `_stack_start` (`mov #__stack_top, r1`
+/// in spirit — verify with `objdump -d` that `Reset` opens with `mov #0x2400,
+/// r1`), zeroes `.bss` and copies `.data`, then jumps here. The reset vector and
+/// the interrupt vector table come from the PAC's `rt` feature + msp430-rt's
+/// linker script, so there is no naked `_start`, no `.reset_vector` static and
+/// no manual `.bss` loop in this crate anymore.
+#[entry]
+fn main() -> ! {
+    // Stop the watchdog before anything else. msp430-rt initializes RAM but does
+    // not touch the WDT, and the default timeout is ~32 ms; Peripherals::take()
+    // below also enters a critical section. Raw access because we don't hold the
+    // peripheral singletons yet.
     unsafe {
         (0x015C as *mut u16).write_volatile(WDTPW | WDTHOLD);
-    }
-
-    // Zero .bss — no runtime does this for us, and SRAM powers up with
-    // indeterminate contents. DEVICE_PERIPHERALS (used by take()) lives here.
-    unsafe {
-        unsafe extern "C" {
-            static mut __bss_start: u8;
-            static mut __bss_end: u8;
-        }
-        let start = &raw mut __bss_start as u16;
-        let end = &raw mut __bss_end as u16;
-        let mut addr = start;
-        while addr < end {
-            (addr as *mut u8).write_volatile(0);
-            addr += 1;
-        }
     }
 
     // Take peripheral singletons — this exercises the critical-section impl
