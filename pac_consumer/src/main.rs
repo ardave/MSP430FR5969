@@ -69,7 +69,8 @@ extern "C" fn rust_main() -> ! {
     // Unlock GPIO pins (clear LOCKLPM5 bit in PM5CTL0)
     p.pmm.pm5ctl0().modify(|_, w| w.locklpm5().clear_bit());
 
-    // Set P1.0 (LED2, red) and P4.6 (LED1, green) as outputs
+    // Set P1.0 (LED2, GREEN) and P4.6 (LED1, RED) as outputs.
+    // (Colours verified on hardware — opposite of the commonly-assumed mapping.)
     p.port_1_2.p1dir().modify(|_, w| w.p1dir0().set_bit());
     p.port_3_4.p4dir().modify(|_, w| w.p4dir6().set_bit());
 

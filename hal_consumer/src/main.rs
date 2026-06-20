@@ -80,11 +80,13 @@ extern "C" fn rust_main() -> ! {
     let serial = p.usci_a0_uart_mode.into_uart(Config::default().baud(9600));
     let (mut tx, _rx) = serial.split();
 
-    // LEDs on the MSP430FR5969 LaunchPad: P1.0 = LED2 (red), P4.6 = LED1 (green).
+    // LEDs on the MSP430FR5969 LaunchPad: P1.0 = LED2 (GREEN), P4.6 = LED1 (RED).
+    // (Verified on hardware — the colours are the opposite of what's often
+    // assumed; the UART labels would not match the LEDs if these were swapped.)
     let (port1, _port2) = p.port_1_2.split();
     let (_port3, port4) = p.port_3_4.split();
-    let mut red_led = port1.pin0.into_output();
-    let mut green_led = port4.pin6.into_output();
+    let mut green_led = port1.pin0.into_output();
+    let mut red_led = port4.pin6.into_output();
 
     tx.write_all(b"MSP430FR5969 UART up @ 9600 8N1\r\n").ok();
 
