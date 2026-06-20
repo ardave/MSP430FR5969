@@ -905,7 +905,12 @@ extern "C" {
 #[repr(C)]
 pub union Vector {
     _handler: unsafe extern "C" fn(),
-    _reserved: u32,
+    // u16, not the svd2rust-emitted u32: an msp430 vector slot is a single
+    // 16-bit word. With u32 each entry is 4 bytes, doubling the table width so
+    // it overruns the VECTORS region (and would place handlers at the wrong
+    // hardware addresses). Was dormant while __INTERRUPTS got GC'd; surfaced
+    // once msp430-rt began KEEPing and placing the table. See CLAUDE.md.
+    _reserved: u16,
 }
 #[cfg(feature = "rt")]
 #[doc(hidden)]

@@ -9,7 +9,10 @@ linker = "/Users/davidfalkner/ti/msp430-gcc-9.3.1.11_macos/bin/msp430-elf-gcc"
 rustflags = [
     "-C", "link-arg=-mmcu=msp430fr5969",
     "-C", "link-arg=-nostartfiles",
-    "-C", "link-arg=-T", "-C", "link-arg=memory.x",
+    # Link against msp430-rt's linker script (provided on the link search path by
+    # msp430-rt's build.rs). It `INCLUDE`s our memory.x (regions) and device.x
+    # (interrupt PROVIDEs), then supplies the SECTIONS and the reset/vector glue.
+    "-C", "link-arg=-T", "-C", "link-arg=link.x",
     # Drop unreferenced functions/data at link time. rustc emits one section per
     # function, so this lets the linker garbage-collect code that is compiled
     # but never called — notably the core::fmt formatting engine pulled in by

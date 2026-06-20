@@ -6,3 +6,7 @@ edition = "2024"
 [dependencies]
 pac = { path = "../pac", features = ["critical-section", "rt"] }
 msp430 = { version = "0.4.1", features = ["critical-section-single-core"] }
+# Provides the #[entry] attribute and the Reset/runtime that replaces the
+# hand-rolled _start. pac's `rt` feature also enables this, but we name it
+# directly to `use msp430_rt::entry`.
+msp430-rt = "0.4.1"

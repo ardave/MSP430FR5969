@@ -46,6 +46,7 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "msp430",
+ "msp430-rt",
 ]
 
 [[package]]
@@ -55,6 +56,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "01a1f453b2c9a9d6a979971cb1d10406046cd5a8ccca3772c08a5b0adc4e3e1d"
 dependencies = [
  "critical-section",
+]
+
+[[package]]
+name = "msp430-rt"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e7f4fcd582ab8da94544e6a67116725df165b36f411623d7665ffe3201f060"
+dependencies = [
+ "msp430",
+ "msp430-rt-macros",
+]
+
+[[package]]
+name = "msp430-rt-macros"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f13ca897dbd30320da83524321d1a66e9bd9cbb894b3a8260fe367247929fdf"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "rand",
+ "rand_xoshiro",
+ "syn",
 ]
 
 [[package]]
@@ -68,6 +92,7 @@ name = "pac"
 version = "0.1.0"
 dependencies = [
  "critical-section",
+ "msp430-rt",
  "vcell",
 ]
 
@@ -76,8 +101,68 @@ name = "pac_consumer"
 version = "0.1.0"
 dependencies = [
  "msp430",
+ "msp430-rt",
  "pac",
 ]
+
+[[package]]
+name = "proc-macro2"
+version = "1.0.106"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
+dependencies = [
+ "unicode-ident",
+]
+
+[[package]]
+name = "quote"
+version = "1.0.45"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41f2619966050689382d2b44f664f4bc593e129785a36d6ee376ddf37259b924"
+dependencies = [
+ "proc-macro2",
+]
+
+[[package]]
+name = "rand"
+version = "0.8.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ca0ecfa931c29007047d1bc58e623ab12e5590e8c7cc53200d5202b69266d8a"
+dependencies = [
+ "rand_core",
+]
+
+[[package]]
+name = "rand_core"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
+
+[[package]]
+name = "rand_xoshiro"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f97cdb2a36ed4183de61b2f824cc45c9f1037f28afe0a322e9fff4c108b5aaa"
+dependencies = [
+ "rand_core",
+]
+
+[[package]]
+name = "syn"
+version = "1.0.109"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-ident",
+]
+
+[[package]]
+name = "unicode-ident"
+version = "1.0.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
 name = "vcell"

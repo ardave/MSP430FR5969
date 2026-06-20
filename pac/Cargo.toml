@@ -4,9 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-rt = []
+# Enabling `rt` pulls in msp430-rt (the reset handler, RAM init, vector-table
+# glue and the #[entry]/#[interrupt] macros) and turns on its `device` feature
+# so the macros validate against this PAC's `Interrupt` enum. The slash-syntax
+# also enables the optional msp430-rt dependency.
+rt = ["msp430-rt/device"]
 critical-section = ["dep:critical-section"]
 
 [dependencies]
 vcell = "0.1"
 critical-section = { version = "1", optional = true }
+msp430-rt = { version = "0.4.1", optional = true }

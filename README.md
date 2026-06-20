@@ -45,7 +45,10 @@ register access for all MSP430FR5969 peripherals, a `Peripherals::take()`
 singleton, and (under the `rt` feature) the interrupt vector table plus the
 `memory.x`/`device.x` linker scripts. `pac/src/lib.rs` is ~71K lines of
 generated code and should not be edited by hand — fixes are made by patching the
-SVD and regenerating.
+SVD and regenerating. (One deliberate exception exists: the vector-table
+`Vector` union's `_reserved` field was hand-patched from `u32` to `u16` so the
+table is the correct 2-bytes-per-slot width for this 16-bit part; see the
+`rt`/msp430-rt notes below.)
 
 ### TODO
 
@@ -61,8 +64,8 @@ notes — lives in [`TODO_pac_datasheet_discrepancies.md`](TODO_pac_datasheet_di
   - [ ] **Hardware multiplier split into two PAC peripherals.** The datasheet documents one unified MPY module at 0x04C0; the PAC models it as `Mpy16` (0x04C0) and `Mpy32` (0x04D0). Different organization, same registers.
   - [ ] **DMA channels flattened into a single peripheral.** The datasheet splits DMA into a general-control block plus per-channel bases; the PAC combines everything into one `Dma` peripheral at 0x0500.
 - **Code review follow-ups**
-  - [ ] **Interrupt handlers use the wrong ABI (critical).** Vectors are declared `extern "C" fn()`; MSP430 ISRs must use `extern "msp430-interrupt"` (they need `RETI`, not `RET`). This crate was run through generic `svd2rust` rather than the msp430 flavor — regenerate with msp430 support or adopt `msp430-rt`.
-  - [ ] **`rt` linker sections don't match `memory.x` (critical).** The PAC emits the table into `.vector_table.interrupts`, but `memory.x` keeps `*(.vector_table)` (which does not match), and no `.reset_vector`/`__RESET_VECTOR` symbol is emitted. The `rt` path is latent-broken.
+  - [ ] **Interrupt handlers use the wrong ABI.** Vectors are declared `extern "C" fn()`; MSP430 ISRs must use `extern "msp430-interrupt"` (they need `RETI`, not `RET`). This crate was run through generic `svd2rust` rather than the msp430 flavor. Now mitigated for the immediate term: `msp430-rt` is adopted and its `#[interrupt]` macro emits the correct ABI on the handler side (the linker patches the table by symbol name), so this is harmless until the first ISR is written — but regenerating with the msp430 flavor is still the proper fix.
+  - [x] **`rt` path is wired to `msp430-rt`.** Previously latent-broken: the PAC emits the table into `.vector_table.interrupts` but the old `memory.x` kept `*(.vector_table)` (no match) and emitted no `.reset_vector`/`__RESET_VECTOR`. Resolved by depending on `msp430-rt` (its `link.x` supplies the SECTIONS and reset glue and `INCLUDE`s `memory.x`/`device.x`), reducing `memory.x` to RAM/ROM/VECTORS regions, and hand-patching the `Vector` union to `u16` (was `u32`, which doubled the table width and overran VECTORS). Binaries link and `Reset` begins with `mov #0x2400, r1`.
   - [ ] **Packaging metadata is absent (high).** `Cargo.toml` is missing `license` (required to publish), `description`, `repository`, `documentation`, `keywords`, `categories`, and `[package.metadata.docs.rs] targets = ["msp430-none-elf"]`.
   - [ ] **`static mut DEVICE_PERIPHERALS` uses the old singleton idiom (medium).** Newer `svd2rust` emits an `AtomicBool`; the current form will warn under the `static_mut_refs` lint. Fixed for free by regenerating.
   - [ ] **eUSCI UART-mode block omits `UCAxIE`/`UCAxIFG` (low).** These registers exist in silicon but aren't modeled, which is exactly why the HAL has to drop to raw pointers for `IFG`. Patch the SVD so the PAC exposes them.
