@@ -1,0 +1,111 @@
+name: CI
+#
+# Continuous-integration build for the MSP430FR5969 PAC + HAL workspace.
+#
+# WHAT THIS WORKFLOW DOES
+#   - firmware job  : compiles the workspace for the `msp430-none-elf` target.
+#                     The `pac` and `hal` library crates are fully built (rlibs,
+#                     real codegen); the whole workspace -- including the
+#                     `pac_consumer` / `hal_consumer` binaries -- is type-checked
+#                     with `cargo check`.
+#   - baud-test job : runs the host-side UART baud-rate unit tests in `baud-test/`.
+#
+# WHAT IT DOES NOT DO (where it leaves off)
+#   - It does NOT link the consumer binaries into flashable ELFs. The final link
+#     needs TI's proprietary MSP430 GCC toolchain (linker + libgcc + the F5
+#     hardware-multiply library `libmul_f5`, see `.cargo/config.toml`), which is
+#     not available on GitHub-hosted runners -- and the linker path in
+#     `.cargo/config.toml` is a local absolute path. `cargo check` still compiles
+#     every line and catches all source-level errors; only the link step is
+#     skipped. Link-only failures (e.g. FRAM overflow, missing runtime symbols)
+#     are therefore NOT caught here -- they must be verified locally with the
+#     documented `cargo +nightly build`.
+#   - It does NOT flash or run anything on hardware (no device in CI).
+#   - It does NOT run lint/format checks (rustfmt/clippy) -- compilation only.
+#
+# To add a real end-to-end link later: use a self-hosted runner that has the TI
+# toolchain, or vendor/cache the TI Linux toolchain and override the linker via
+# `CARGO_TARGET_MSP430_NONE_ELF_LINKER`.
+
+# Compile on every PR targeting main, and on every push (merge or direct
+# commit) to main.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A newer push to the same branch/PR cancels an in-flight run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Compile the firmware for the msp430-none-elf target.
+  #
+  # The two library crates (pac, hal) are fully code-generated here -- libraries
+  # produce rlibs, so this is a real compile with no link step.
+  #
+  # The consumer *binaries* are only `check`ed, not linked. Linking a flashable
+  # binary needs TI's proprietary MSP430 GCC toolchain (the linker plus libgcc
+  # and the F5 hardware-multiply library `libmul_f5`; see `.cargo/config.toml`),
+  # which is not available on GitHub-hosted runners and whose linker path in
+  # `.cargo/config.toml` is a local absolute path. `cargo check` still compiles
+  # every line of the binaries and catches all source-level errors -- only the
+  # final link is skipped.
+  # ---------------------------------------------------------------------------
+  firmware:
+    name: Firmware (msp430-none-elf)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # `-Z build-std=core` (set in .cargo/config.toml) compiles `core` from
+      # source for the tier-3 msp430 target, so the nightly toolchain needs the
+      # `rust-src` component. No `rustup target add` is required.
+      - name: Install nightly Rust + rust-src
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build libraries (pac, hal)
+        run: cargo build -p pac -p hal
+
+      - name: Check entire workspace (incl. consumer binaries)
+        run: cargo check --workspace
+
+  # ---------------------------------------------------------------------------
+  # Host-side unit tests for the UART baud-rate math.
+  #
+  # `baud-test/` is detached from the workspace and pins its host triple to
+  # `aarch64-apple-darwin` (see baud-test/.cargo/config.toml), so it runs on an
+  # Apple-Silicon macOS runner -- `macos-latest` is arm64 -- where that triple
+  # matches the host and the crate builds as documented. It also relies on
+  # `-Z build-std`, hence nightly + rust-src here too.
+  # ---------------------------------------------------------------------------
+  baud-test:
+    name: Baud-rate math (host tests)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly Rust + rust-src
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: baud-test
+
+      - name: Run baud-rate tests
+        working-directory: baud-test
+        run: cargo test
