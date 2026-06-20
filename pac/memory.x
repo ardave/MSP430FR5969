@@ -7,6 +7,11 @@ MEMORY
     RESETVEC(r): ORIGIN = 0xFFFE, LENGTH = 0x0002  /* Reset vector */
 }
 
+/* Initial stack pointer: top of RAM (the stack grows downward from here).
+   There is no crt0/msp430-rt to set SP, so the reset path must load this value
+   before any stack use. .data/.bss grow up from ORIGIN(RAM). */
+PROVIDE(__stack_top = ORIGIN(RAM) + LENGTH(RAM));
+
 SECTIONS
 {
     .text : ALIGN(2)

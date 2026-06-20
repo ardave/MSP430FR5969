@@ -178,9 +178,17 @@ impl<PORT: PortRegs, const N: u8, MODE> Pin<PORT, N, MODE> {
         Pin::new()
     }
 
-    /// Configure as push-pull output.
+    /// Configure as push-pull output, driving low initially.
+    ///
+    /// The output latch (`PxOUT`) is **not** reset to a known value by reset or
+    /// by switching `PxDIR` to output — it retains whatever it held before. So
+    /// we drive the pin low here *before* enabling the output, otherwise a
+    /// freshly-configured output would drive an indeterminate level (and could
+    /// glitch the pin high for an instant) until the caller's first
+    /// `set_high`/`set_low`. Clearing `PxOUT` first makes the level defined.
     pub fn into_output(self) -> Pin<PORT, N, Output> {
         unsafe {
+            clear_bit(PORT::OUT, N); // defined initial level (low) before driving
             set_bit(PORT::DIR, N);
             clear_bit(PORT::REN, N);
             select_gpio::<PORT>(N);
