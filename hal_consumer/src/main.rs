@@ -90,17 +90,24 @@ extern "C" fn rust_main() -> ! {
 
     tx.write_all(b"MSP430FR5969 UART up @ 9600 8N1\r\n").ok();
 
+    // Busy-loop iterations for a ~1 s hold between transitions. Calibrated
+    // empirically at the reset MCLK (1 MHz): 150_000 iterations measured at
+    // ~2.695 s, i.e. ~18 cycles/iter, so 1 s ≈ 55_300. This is a rough timing
+    // loop, not a precise one — it drifts with optimization level and MCLK; a
+    // hardware timer is the proper fix once the clock/timer HAL exists.
+    const ONE_SECOND: u32 = 55_300;
+
     // Alternate the two LEDs, printing the colour of whichever just turned on.
     loop {
         red_led.set_high().ok();
         green_led.set_low().ok();
         tx.write_all(b"red\r\n").ok();
-        delay(150_000);
+        delay(ONE_SECOND);
 
         green_led.set_high().ok();
         red_led.set_low().ok();
         tx.write_all(b"green\r\n").ok();
-        delay(150_000);
+        delay(ONE_SECOND);
     }
 }
 
