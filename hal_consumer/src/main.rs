@@ -12,7 +12,9 @@ use hal::serial::{Config, SerialExt};
 // Force-link it so the `set_impl!` symbols resolve for pac's Peripherals::take().
 use msp430 as _;
 
+// Watchdog Timer Password
 const WDTPW: u16 = 0x5A00;
+// Watchdog Timer Hold.  Setting it stops (pauses) the watchdog timer.
 const WDTHOLD: u16 = 0x0080;
 
 #[used]
