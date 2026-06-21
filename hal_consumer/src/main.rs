@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+use hal::delay::Delay;
+use hal::embedded_hal::delay::DelayNs as _;
 use hal::embedded_hal::digital::OutputPin;
 use hal::embedded_io::Write as _;
 use hal::gpio::GpioExt;
@@ -62,33 +64,26 @@ fn main() -> ! {
 
     tx.write_all(b"MSP430FR5969 UART up @ 9600 8N1\r\n").ok();
 
-    // Busy-loop iterations for a ~1 s hold between transitions. Calibrated
-    // empirically at the reset MCLK (1 MHz): 150_000 iterations measured at
-    // ~2.695 s, i.e. ~18 cycles/iter, so 1 s ≈ 55_300. This is a rough timing
-    // loop, not a precise one — it drifts with optimization level and MCLK; a
-    // hardware timer is the proper fix once the clock/timer HAL exists.
-    const ONE_SECOND: u32 = 55_300;
+    // Software cycle-counting delay, calibrated for the reset MCLK (1 MHz, the
+    // same clock SMCLK derives the UART BRCLK from above). This replaces the old
+    // hand-tuned black_box busy loop with the HAL's `DelayNs` impl; still a
+    // software delay (approximate, biased slightly long), but now expressed in
+    // real time units and shared logic. A hardware timer remains the proper fix
+    // once the clock/timer HAL exists.
+    let mclk_freq = 1_000_000;
+    let mut delay = Delay::new(mclk_freq);
 
     // Alternate the two LEDs, printing the colour of whichever just turned on.
     loop {
         red_led.set_high().ok();
         green_led.set_low().ok();
         tx.write_all(b"red\r\n").ok();
-        delay(ONE_SECOND);
+        delay.delay_ms(1000);
 
         green_led.set_high().ok();
         red_led.set_low().ok();
         tx.write_all(b"green\r\n").ok();
-        delay(ONE_SECOND);
-    }
-}
-
-#[inline(never)]
-fn delay(n: u32) {
-    let mut i = n;
-    while i > 0 {
-        i -= 1;
-        core::hint::black_box(i);
+        delay.delay_ms(1000);
     }
 }
 

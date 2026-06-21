@@ -1,6 +1,10 @@
 #![no_std]
+// Inline asm for msp430 is gated behind this nightly feature (used by
+// `delay` for its cycle-accurate busy-loop).
+#![feature(asm_experimental_arch)]
 
 mod baud;
+pub mod delay;
 pub mod gpio;
 pub mod serial;
 
