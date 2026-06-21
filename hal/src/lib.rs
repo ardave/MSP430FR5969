@@ -4,6 +4,7 @@
 #![feature(asm_experimental_arch)]
 
 mod baud;
+pub mod clocks;
 pub mod delay;
 pub mod gpio;
 pub mod serial;

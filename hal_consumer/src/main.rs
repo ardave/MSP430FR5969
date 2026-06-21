@@ -44,14 +44,22 @@ fn main() -> ! {
 
     let p = hal::pac::Peripherals::take().unwrap();
 
+    // Configure the clock tree first: this owns the CS module and returns the
+    // resulting frequencies, which every clocked peripheral below reads from
+    // (single source of truth). MCLK stays 1 MHz; SMCLK is bumped to the full
+    // 8 MHz DCO for fine-resolution peripheral timing.
+    let clocks = hal::clocks::configure(p.cs);
+
     // Unlock GPIO pins (clear LOCKLPM5 in PM5CTL0) so the UART pin mux takes
     // effect.
     p.pmm.pm5ctl0().modify(|_, w| w.locklpm5().clear_bit());
 
-    // Configure eUSCI_A0 as a 9600 8N1 UART. After reset, SMCLK on this device
-    // is the 8 MHz DCO divided by 8 = 1 MHz, which is the default BRCLK here.
-    // UCA0TXD = P2.0, UCA0RXD = P2.1 (configured by the HAL).
-    let serial = p.usci_a0_uart_mode.into_uart(Config::default().baud(9600));
+    // Configure eUSCI_A0 as a 9600 8N1 UART. BRCLK = SMCLK, now 8 MHz (from the
+    // clocks config above), so the baud math is derived from clocks.smclk()
+    // rather than a hard-coded number. UCA0TXD = P2.0, UCA0RXD = P2.1.
+    let serial = p
+        .usci_a0_uart_mode
+        .into_uart(Config::new(clocks.smclk()).baud(9600));
     let (mut tx, _rx) = serial.split();
 
     // LEDs on the MSP430FR5969 LaunchPad: P1.0 = LED2 (GREEN), P4.6 = LED1 (RED).
@@ -69,9 +77,8 @@ fn main() -> ! {
     // hand-tuned black_box busy loop with the HAL's `DelayNs` impl; still a
     // software delay (approximate, biased slightly long), but now expressed in
     // real time units and shared logic. A hardware timer remains the proper fix
-    // once the clock/timer HAL exists.
-    let mclk_freq = 1_000_000;
-    let mut delay = Delay::new(mclk_freq);
+    // once the clock/timer HAL exists. MCLK comes from the clocks config (1 MHz).
+    let mut delay = Delay::new(clocks.mclk());
 
     // Alternate the two LEDs, printing the colour of whichever just turned on.
     loop {
