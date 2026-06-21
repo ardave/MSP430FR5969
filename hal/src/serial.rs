@@ -314,6 +314,10 @@ impl<USCI: Instance> Serial<USCI> {
 
         // Build the CTLW0 value (frame format + clock select), keeping the
         // module in reset for now.
+        //
+        // CTLW0 is the primary 16-bit control word register for the eUSCI serial communication peripherals.
+        // The W0 suffix means "Word 0" — a 16-bit (word) access to control register 0. On older MSP430
+        // families this was split into two separate 8-bit registers (CTL0 and CTL1); the FR5969's eUSCI combines them into one word.
         let mut ctlw0 = UCSWRST | ((config.clock_source as u16) << UCSSEL_SHIFT);
         match config.parity {
             Parity::None => {}

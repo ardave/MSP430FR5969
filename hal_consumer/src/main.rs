@@ -46,8 +46,10 @@ fn main() -> ! {
 
     // Configure the clock tree first: this owns the CS module and returns the
     // resulting frequencies, which every clocked peripheral below reads from
-    // (single source of truth). MCLK stays 1 MHz; SMCLK is bumped to the full
-    // 8 MHz DCO for fine-resolution peripheral timing.
+    // (single source of truth). Performance profile: MCLK stays 1 MHz; SMCLK is
+    // bumped to the full 8 MHz DCO for fine-resolution peripheral timing.
+    // (hal::clocks::configure_low_power puts ACLK on the 32.768 kHz LFXT crystal
+    // for LPM3 sleep instead — use that for the sleep-based watchdog.)
     let clocks = hal::clocks::configure(p.cs);
 
     // Unlock GPIO pins (clear LOCKLPM5 in PM5CTL0) so the UART pin mux takes
