@@ -42,45 +42,63 @@ short-circuits on a zero numerator. Concrete motivation for the hardware-timer
 delay on the roadmap. (UART receiving cleanly is itself proof the 1 µs tick is
 right — BRCLK is SMCLK, so a wrong SMCLK would garble characters.)
 
-## ☐ Step 2 — overflow counting (extend the range; first real ISR)
+## ✅ Step 2 — overflow counting (extend the range; first real ISR) (DONE)
 
 Goal: measure intervals longer than one 16-bit period by assembling a wider
-(32-bit+) tick count.
+32-bit tick count. **Hardware-verified (2026-06-21).**
 
-- [ ] Enable the counter-overflow interrupt: set `TAIE` in `TA0CTL`; the
-      overflow sets `TAIFG` and fires the **`TIMER0_A1`** vector (the shared
-      vector — `TAIFG` plus CCR1/CCR2, decoded via the `TA0IV` register).
-- [ ] Write the project's **first real ISR** with msp430-rt's `#[interrupt]`
-      macro. This is the moment to deal with the two CLAUDE.md "Shortcomings":
-      verify the `extern "msp430-interrupt"` ABI / `RETI` is emitted, and that
-      the vector is patched by symbol name.
-- [ ] Share a `u16` overflow counter between the ISR and `main` via a
-      `critical-section`-guarded static (`Mutex<Cell<u16>>`) — CS support is
-      already wired up (`use msp430 as _`).
-- [ ] Compose `now64() = (overflow << 16) | TA0R`, handling the
-      **read race**: TAIFG can fire between reading the high word and the low
-      word. Standard fix — re-read until two consecutive high-word reads agree,
-      or read TA0R, then overflow, then TA0R again and reconcile.
-- [ ] Widen the `ticks_to_*` helpers to `u64` ticks.
-- [ ] Demo: time one of the ~1 s blinks end-to-end and confirm it now reads
-      correctly (Step 1 deliberately couldn't).
-- [ ] Enable interrupts globally (`__enable_interrupt()` / set GIE) in the
-      consumer — nothing in the project does this yet.
+- [x] Enable the counter-overflow interrupt: `Counter::enable_overflow_interrupt`
+      sets `TAIE` in `TA0CTL`; the overflow sets `TAIFG` and fires `TIMER0_A1`.
+- [x] **First real ISR** in `hal_consumer` via `#[msp430_rt::interrupt] fn
+      TIMER0_A1`. `objdump` confirmed it ends in `reti` (the `msp430-interrupt`
+      ABI) and that vector slot 44 (table offset 0xFF90 + 2·44 = 0xFFE8) holds
+      the handler address, overriding only its own weak default. Needed
+      `#![feature(abi_msp430_interrupt)]` in the consumer and a `pub mod
+      interrupt { pub use pac::Interrupt::*; }` shim in the HAL (the macro
+      name-checks `interrupt::TIMER0_A1`; this PAC exposes a `pac::Interrupt`
+      enum, not a module).
+- [x] Share a `u16` overflow counter via `critical_section::Mutex<Cell<u16>>`
+      (`OVERFLOWS` in the consumer); ISR gets its `CriticalSection` from the
+      macro, `main` via `critical_section::with`. Added `critical-section = "1"`
+      to the consumer.
+- [x] `Counter::now64(overflows)`: assembles `(ovf << 16) | TA0R`. Read race
+      handled by calling it inside a CS and folding in a *pending-but-uncounted*
+      overflow — if `TAIFG` is set, add one and re-read `TA0R` so the low half
+      matches the bumped high half. `clear_overflow_irq()` (raw `TA0CTL` write)
+      lets the ISR clear the flag without owning the `Counter`.
+- [x] Widened `ticks_to_us`/`ticks_to_ns` to take `u32` ticks.
+- [x] Demo: times a full ~1 s interval. **Result:** 16-bit-only delta reads
+      22206 ticks (= 1005246 mod 65536, the step-1 failure), 32-bit `now64`
+      reads 1005246 ticks = 1005246 µs. The ~5.2 ms over 1000 ms = ~2.5 ms
+      `Delay` math overhead + ~15 overflow-ISR services inside the window
+      (the counter rightly counts them). Stable across every reading.
+- [x] Enabled interrupts globally: `unsafe { msp430::interrupt::enable() }` after
+      the timer + ISR + UART are configured — the first GIE-set in the project.
 
-## ☐ Step 3 — hardware capture for external events (jitter-free)
+## ✅ Step 3 — hardware capture (software-triggered; approach A) (DONE)
 
-Goal: timestamp real edges on a pin with zero software jitter — the right tool
-for "interval between two external events/interrupts."
+Goal: latch `TAxR` in hardware at an *event*, so the timestamp is immune to when
+software reads it. **Hardware-verified (2026-06-21).** Approach **A**
+(software-triggered, no pin) — a true external pin was deferred because no
+LaunchPad button maps to a Timer0_A3 capture input and the one CCI1A pin
+(`TA0.1` = P1.0) is the green LED.
 
-- [ ] Put a CCR channel in **capture mode** (`CAP=1` in `TA0CCTLn`); select edge
-      (`CM`), input (`CCIS`), and synchronize (`SCS=1`). Hardware latches `TA0R`
-      into `TA0CCRn` on the edge.
-- [ ] Service the capture interrupt (`CCIE`/`CCIFG`); read `TA0CCRn` for the
-      timestamp. Check the `COV` (capture-overflow) bit to detect a missed edge.
-- [ ] Route a launchpad pin (e.g. a button on P1.1, or loop a GPIO output back)
-      to the timer's CCI input for a self-contained demo.
-- [ ] API sketch: `Counter::capture(channel, edge)` returning the latched ticks,
-      and/or an interval helper that subtracts successive captures.
+- [x] CCR1 in **capture mode**: `Counter::configure_capture` sets `CAP=1`,
+      `SCS=1` (sync), `CM=rising`, `CCIS=GND` (armed).
+- [x] `Counter::software_capture()` manufactures the edge with no pin by toggling
+      `CCIS` GND→VCC (capture) then back to GND (re-arm), and returns `TAxCCR1`.
+      `capture_value()` re-reads the latch; `capture_overflowed()`/
+      `clear_capture_overflow()` expose `COV` (missed-edge detect).
+- [x] Demo contrasts a hardware capture against software reads taken 5 ms later.
+      **Result (stable):** `capture jitter 17 us; 5ms-late read drifted 7933 us`.
+      The capture tracked the trigger to 17 µs (a fixed ~17-instruction gap),
+      while a counter read taken ~5 ms late was 7933 µs off (5000 requested +
+      ~2.5 ms `Delay` fixed overhead from step 1 + instructions). Jitter ≪ drift
+      is the point: the latch froze the event time regardless of read latency.
+- [ ] Deferred to a follow-on (approach **B**): route a real pin (`TA0.1`/CCI1A
+      = P1.0) to the capture input and service it via the `TIMER0_A1` CCR1
+      interrupt (`CCIE`/`CCIFG`, decode `TA0IV`==0x02), with an interval helper
+      that subtracts successive captures.
 
 ## ☐ Step 4 — measure through deep sleep (ACLK source)
 

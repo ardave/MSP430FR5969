@@ -1,19 +1,50 @@
 #![no_std]
 #![no_main]
+// The #[interrupt] macro emits handlers with the unstable `extern
+// "msp430-interrupt"` ABI (so they end in RETI, not RET). That ABI is gated
+// behind this nightly feature in the crate that *contains* the generated ISR.
+#![feature(abi_msp430_interrupt)]
 
+use core::cell::Cell;
+use critical_section::Mutex;
 use hal::delay::Delay;
 use hal::embedded_hal::delay::DelayNs as _;
 use hal::embedded_hal::digital::OutputPin;
 use hal::embedded_io::Write as _;
 use hal::gpio::GpioExt;
+// Vector-name shim: `#[msp430_rt::interrupt]` validates the handler name against
+// `interrupt::TIMER0_A1`, so the module must be in scope.
+use hal::interrupt;
 use hal::serial::{Config, SerialExt};
 use hal::timer::{Counter, Divider};
 use msp430_rt::entry;
 
 // The `msp430` crate provides the critical-section implementation for MSP430
-// (acquire: read SR then DINT+NOP, release: restore GIE if it was set).
-// Force-link it so the `set_impl!` symbols resolve for pac's Peripherals::take().
+// (acquire: read SR then DINT+NOP, release: restore GIE if it was set) and the
+// global-interrupt-enable used below. Referenced directly so its symbols link.
 use msp430 as _;
+
+/// Counter-overflow tally for Timer0_A3, shared between the `TIMER0_A1` ISR (the
+/// writer) and `main` (the reader). A `critical-section` `Mutex` makes the
+/// cross-context access sound: the ISR receives a `CriticalSection` token from
+/// the `#[interrupt]` macro, and `main` obtains one via `critical_section::with`
+/// — neither can touch the cell without proving interrupts are masked.
+static OVERFLOWS: Mutex<Cell<u16>> = Mutex::new(Cell::new(0));
+
+/// Timer0_A3 counter-overflow ISR — the project's first real interrupt.
+///
+/// Fires every time the 16-bit counter wraps 0xFFFF→0x0000 (≈65.5 ms at the
+/// 1 MHz tick). Its whole job: clear the hardware flag and bump the software
+/// tally, which [`Counter::now64`] later combines with `TA0R` into a 32-bit
+/// timestamp. `#[msp430_rt::interrupt]` emits the correct `msp430-interrupt`
+/// ABI (RETI) and overrides the weak default vector by symbol name; the `cs`
+/// argument is the macro-supplied critical-section token.
+#[msp430_rt::interrupt]
+fn TIMER0_A1(cs: CriticalSection) {
+    hal::timer::clear_overflow_irq();
+    let ovf = OVERFLOWS.borrow(cs);
+    ovf.set(ovf.get().wrapping_add(1));
+}
 
 // Watchdog Timer Password
 const WDTPW: u16 = 0x5A00;
@@ -90,33 +121,50 @@ fn main() -> ! {
     // other is a genuine cross-check rather than a tautology.
     let counter = Counter::new_smclk(p.timer_0_a3, &clocks, Divider::Div8);
 
-    // Characterize the software `Delay` with the hardware counter: measure a
-    // sweep of requested delays plus a zero-length baseline (back-to-back
-    // snapshots — the cost of the measurement apparatus itself). If the error is
-    // a *fixed* per-call overhead it shows up as a roughly constant excess on
-    // every row, dominating the 1 ms request and vanishing into the 50 ms one;
-    // if it's *proportional* the excess grows with the request. All requests
-    // stay well under the 65.5 ms wrap. The red LED is on while measuring.
-    let requests_ms = [0u32, 1, 5, 10, 50];
+    // Step 2 left in place: overflow counting + GIE, so the counter still spans
+    // long intervals and the TIMER0_A1 ISR keeps tallying wraps underneath us.
+    counter.enable_overflow_interrupt();
+    unsafe { msp430::interrupt::enable() };
+
+    // Step 3: hardware capture. CCR1 in capture mode latches TA0R the instant an
+    // edge arrives — here a software-toggled internal edge (no pin). The point:
+    // the captured timestamp reflects the *event*, not when software reads it.
+    counter.configure_capture();
+
+    // Each loop: mark an "event" (a software read at the trigger instant, plus a
+    // hardware capture at the same instant), then wait 5 ms to simulate latency
+    // between the event and servicing it. Afterwards, re-read the *frozen*
+    // capture and the *live* counter:
+    //   - jitter  = capture - trigger-read: a few µs, how closely the hardware
+    //     latch tracked the event (predict ~0).
+    //   - drift   = live - frozen: ~5000 µs, how wrong you'd be reading the
+    //     counter at service time instead of capturing at event time. The
+    //     capture is immune to it — that's the whole reason capture mode exists.
     let mut buf = [0u8; 12];
     loop {
         red_led.set_high().ok();
         green_led.set_low().ok();
-        for &ms in requests_ms.iter() {
-            let start = counter.now();
-            delay.delay_ms(ms);
-            let ticks = counter.elapsed_since(start);
-            tx.write_all(b"req ").ok();
-            tx.write_all(format_u32(ms, &mut buf)).ok();
-            tx.write_all(b" ms -> measured ").ok();
-            tx.write_all(format_u32(counter.ticks_to_us(ticks), &mut buf)).ok();
-            tx.write_all(b" us\r\n").ok();
-        }
-        tx.write_all(b"---\r\n").ok();
+
+        let trigger = counter.now(); // software timestamp at ~the event instant
+        let cap = counter.software_capture(); // hardware latch at ~the event instant
+
+        delay.delay_ms(5); // latency between the event and getting around to it
+
+        let frozen = counter.capture_value(); // capture re-read 5 ms later — unchanged
+        let live = counter.now(); // live counter 5 ms later
+
+        let jitter = cap.wrapping_sub(trigger);
+        let drift = live.wrapping_sub(frozen);
+
+        tx.write_all(b"capture jitter ").ok();
+        tx.write_all(format_u32(counter.ticks_to_us(jitter as u32), &mut buf)).ok();
+        tx.write_all(b" us; 5ms-late read drifted ").ok();
+        tx.write_all(format_u32(counter.ticks_to_us(drift as u32), &mut buf)).ok();
+        tx.write_all(b" us (capture immune)\r\n").ok();
 
         green_led.set_high().ok();
         red_led.set_low().ok();
-        delay.delay_ms(1000); // pacing between sweeps — not measured
+        delay.delay_ms(1000); // pacing between measurements
     }
 }
 

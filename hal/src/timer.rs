@@ -37,11 +37,37 @@
 //! | 8 MHz | ÷8      | 1 MHz     | 1 µs       | 65.5 ms     |
 //! | 1 MHz | ÷1      | 1 MHz     | 1 µs       | 65.5 ms     |
 //!
-//! This module measures **single intervals shorter than one wrap period**. To
-//! time anything longer you must count overflows (the `TAIFG` flag / the
-//! `TIMERx_A1` interrupt) and assemble a wider tick count — that is deliberately
-//! left to a later milestone (see `TIMING-MEASUREMENT.md`), because it needs the
-//! project's first real ISR.
+//! Out of the box [`now`](Counter::now) measures **single intervals shorter
+//! than one wrap period**. To time anything longer, enable the overflow
+//! interrupt with [`Counter::enable_overflow_interrupt`] and have the
+//! `TIMER0_A1` ISR tally rollovers in a shared counter; then
+//! [`Counter::now64`] assembles those tallies with `TAxR` into a 32-bit
+//! timestamp (~71 minutes before *it* wraps, at the 1 MHz tick). The ISR, the
+//! shared counter, and enabling interrupts globally live in the application —
+//! see `hal_consumer` for a worked example.
+//!
+//! # Hardware capture
+//!
+//! A software [`now`](Counter::now) read is taken whenever the CPU reaches the
+//! instruction — so interrupt latency and scheduling jitter land *in* the
+//! measurement. A capture/compare channel in **capture mode** instead latches
+//! `TAxR` into `TAxCCR1` the moment a selected edge arrives, in hardware, so the
+//! timestamp reflects the *event* regardless of when software reads it.
+//! [`configure_capture`](Counter::configure_capture) sets this up on CCR1, and
+//! [`software_capture`](Counter::software_capture) triggers one without any
+//! external pin by toggling the internal `CCIS` input GND→VCC. (A true external
+//! edge would route a pin to the channel's `CCIxA`/`CCIxB` input instead — on
+//! this part `TA0.1`/CCI1A is P1.0, which is the green LED, so the pin route is
+//! left as a later exercise.)
+//!
+//! # The overflow read race
+//!
+//! Reading a 32-bit timestamp out of a 16-bit counter plus a software high word
+//! is not atomic: the counter can roll over (setting `TAIFG`) in the window
+//! between sampling the high word and the low word. [`now64`](Counter::now64)
+//! must therefore be called inside a critical section (interrupts masked, so the
+//! ISR cannot run mid-read) and reconciles a *pending-but-uncounted* overflow
+//! itself by checking `TAIFG` — see its docs.
 //!
 //! # Clock source
 //!
@@ -136,30 +162,139 @@ impl Counter {
     }
 
     /// Ticks elapsed since the `start` snapshot, valid for intervals shorter
-    /// than one full counter period (see the resolution/range table).
+    /// than one full counter period (see the resolution/range table). For
+    /// longer intervals use [`now64`](Counter::now64) snapshots instead.
     pub fn elapsed_since(&self, start: u16) -> u16 {
         self.now().wrapping_sub(start)
     }
 
     /// Convert a tick delta to microseconds.
     ///
-    /// Done in `u64` so `ticks * 1_000_000` cannot overflow (the max,
-    /// `65535 * 1_000_000`, exceeds `u32`); the divide brings it back into range.
-    pub fn ticks_to_us(&self, ticks: u16) -> u32 {
+    /// Takes a `u32` tick count so it serves both the 16-bit
+    /// [`elapsed_since`](Counter::elapsed_since) path (widen the `u16`) and the
+    /// 32-bit [`now64`](Counter::now64) path. Done in `u64` so `ticks *
+    /// 1_000_000` cannot overflow; the divide brings it back into range. The
+    /// `u32` result holds up to ~4295 s (≈71 min) of microseconds.
+    pub fn ticks_to_us(&self, ticks: u32) -> u32 {
         (ticks as u64 * 1_000_000 / self.tick_hz as u64) as u32
     }
 
-    /// Convert a tick delta to nanoseconds.
-    ///
-    /// `ticks * 1_000_000_000` is up to ~6.5e13, hence `u64`. Resolution is
-    /// still one tick — at 1 MHz this only ever reports whole microseconds.
-    pub fn ticks_to_ns(&self, ticks: u16) -> u32 {
+    /// Convert a tick delta to nanoseconds. Resolution is still one tick — at
+    /// 1 MHz this only ever reports whole microseconds. The `u32` result holds
+    /// only ~4.3 s of nanoseconds, so use it for short deltas.
+    pub fn ticks_to_ns(&self, ticks: u32) -> u32 {
         (ticks as u64 * 1_000_000_000 / self.tick_hz as u64) as u32
+    }
+
+    /// Enable the counter-overflow interrupt (`TAIE`).
+    ///
+    /// Once enabled, each time `TAxR` rolls over 0xFFFF→0x0000 the hardware sets
+    /// `TAIFG` and fires the **`TIMER0_A1`** vector. The application must define
+    /// that ISR (msp430-rt `#[interrupt] fn TIMER0_A1`), clear the flag from it
+    /// with [`clear_overflow_irq`], tally the rollover in a shared counter, and
+    /// enable interrupts globally (set GIE). See [`now64`](Counter::now64).
+    pub fn enable_overflow_interrupt(&self) {
+        self.timer.ta0ctl().modify(|_, w| w.taie().set_bit());
+    }
+
+    /// Whether a counter overflow is pending (`TAIFG` set).
+    pub fn overflow_pending(&self) -> bool {
+        self.timer.ta0ctl().read().taifg().bit_is_set()
+    }
+
+    /// Assemble a 32-bit timestamp from the software `overflows` tally and the
+    /// hardware counter. **Call inside a critical section**, passing the current
+    /// value of the ISR-maintained overflow counter (read under the same CS).
+    ///
+    /// With interrupts masked the ISR cannot run, so a rollover that happens
+    /// while we are reading would set `TAIFG` without being tallied. We detect
+    /// that and fold it in: if `TAIFG` is set, an uncounted overflow occurred,
+    /// so we add one to `overflows` and re-read `TAxR` *after* observing the
+    /// flag — guaranteeing the low half is the post-wrap (small) value that
+    /// matches the incremented high half. (The ISR will also count this same
+    /// overflow once the CS ends; that is fine — it only updates the software
+    /// tally for *next* time, it does not double-count this reading.)
+    pub fn now64(&self, overflows: u16) -> u32 {
+        let mut ovf = overflows;
+        let mut cnt = self.now();
+        if self.overflow_pending() {
+            ovf = ovf.wrapping_add(1);
+            cnt = self.now();
+        }
+        ((ovf as u32) << 16) | cnt as u32
+    }
+
+    /// Configure capture/compare channel **CCR1** for software-triggered
+    /// capture (no external pin).
+    ///
+    /// In *capture* mode (`CAP=1`) the hardware copies `TAxR` into `TAxCCR1` the
+    /// instant a selected edge appears on the channel's capture input — the
+    /// timestamp is frozen at the *event*, not at whenever software gets around
+    /// to reading it. Here the input is the internal `CCIS` source rather than a
+    /// pin: parking it at GND (`CCIS=2`) and later flipping it to VCC
+    /// (`CCIS=3`) manufactures a rising edge in hardware, which is exactly what
+    /// [`software_capture`](Counter::software_capture) does. `CM=rising` so only
+    /// the GND→VCC flip captures (the re-arming VCC→GND flip is ignored), and
+    /// `SCS=1` synchronizes the capture to the timer clock to avoid a race.
+    pub fn configure_capture(&self) {
+        self.timer.ta0cctl1().write(|w| {
+            w.cap().set_bit(); // capture (not compare) mode
+            w.scs().set_bit(); // synchronous capture
+            w.cm().cm_1(); // capture on a rising edge
+            w.ccis().ccis_2() // input = GND (armed for a GND→VCC rising edge)
+        });
+    }
+
+    /// Software-trigger a capture and return the latched `TAxR` value.
+    ///
+    /// Drives the internal capture input GND→VCC (a rising edge the hardware
+    /// latches), then returns it to GND to re-arm for next time. The two field
+    /// writes also give the synchronous capture (`SCS`) a clock edge to complete
+    /// before [`capture_value`](Counter::capture_value) reads `TAxCCR1`. Requires
+    /// [`configure_capture`] first.
+    pub fn software_capture(&self) -> u16 {
+        self.timer.ta0cctl1().modify(|_, w| w.ccis().ccis_3()); // → VCC: rising edge → capture
+        self.timer.ta0cctl1().modify(|_, w| w.ccis().ccis_2()); // → GND: re-arm (falling, ignored)
+        self.capture_value()
+    }
+
+    /// Read the most recently captured value from `TAxCCR1`.
+    pub fn capture_value(&self) -> u16 {
+        self.timer.ta0ccr1().read().bits()
+    }
+
+    /// Whether a capture overflow occurred (`COV`): a new edge was captured
+    /// before the previous value was read, so an event was missed. Clear it with
+    /// [`clear_capture_overflow`](Counter::clear_capture_overflow).
+    pub fn capture_overflowed(&self) -> bool {
+        self.timer.ta0cctl1().read().cov().bit_is_set()
+    }
+
+    /// Clear the capture-overflow flag (`COV`).
+    pub fn clear_capture_overflow(&self) {
+        self.timer.ta0cctl1().modify(|_, w| w.cov().clear_bit());
     }
 
     /// Release the underlying timer peripheral (stops owning it). The counter is
     /// left running; stop it via the returned peripheral if desired.
     pub fn free(self) -> pac::Timer0A3 {
         self.timer
+    }
+}
+
+/// Clear a pending Timer0_A3 overflow interrupt (`TAIFG`).
+///
+/// Intended to be called from the `TIMER0_A1` ISR, which does not own the
+/// [`Counter`]; it therefore reaches `TA0CTL` by raw address (consistent with
+/// the rest of this HAL) and clears only `TAIFG`, leaving the source/divider/
+/// mode/enable bits intact. The read-modify-write cannot race the hardware
+/// re-setting `TAIFG` — the next overflow is a full counter period away.
+pub fn clear_overflow_irq() {
+    // TA0CTL = Timer0_A3 base (0x0340); TAIFG is bit 0.
+    const TA0CTL: usize = 0x0340;
+    const TAIFG: u16 = 0x0001;
+    unsafe {
+        let p = TA0CTL as *mut u16;
+        p.write_volatile(p.read_volatile() & !TAIFG);
     }
 }
