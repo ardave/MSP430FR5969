@@ -72,11 +72,13 @@
 //! # Clock source
 //!
 //! [`Counter::new_smclk`] sources the counter from **SMCLK**, the same clock the
-//! UART's BRCLK runs on. SMCLK is gated off in LPM3, so this counter does *not*
-//! run in deep sleep — that is also a job for the later ACLK/overflow milestone.
-//! It reads the tick rate from [`Clocks`] (single source of truth) exactly as
-//! [`crate::delay::Delay`] reads MCLK, so the tick↔time math tracks whichever
-//! clock profile you configured.
+//! UART's BRCLK runs on. SMCLK is gated off in LPM3, so an SMCLK-sourced counter
+//! does *not* run in deep sleep. To measure (and wake) through LPM3, use
+//! [`Counter::new_aclk`] instead — ACLK on the 32.768 kHz crystal keeps ticking
+//! in LPM3 — and arm [`Counter::schedule_wake`] (a CCR0 compare) to fire the
+//! `TIMER0_A0` interrupt at a chosen tick. Either way the tick rate is read from
+//! [`Clocks`] (single source of truth) exactly as [`crate::delay::Delay`] reads
+//! MCLK, so the tick↔time math tracks whichever clock profile you configured.
 
 use crate::clocks::Clocks;
 use crate::pac;
@@ -144,6 +146,35 @@ impl Counter {
         Counter {
             timer,
             tick_hz: clocks.smclk() / div.value(),
+        }
+    }
+
+    /// Configure Timer0_A3 as a free-running counter clocked from **ACLK**
+    /// divided by `div`, and start it.
+    ///
+    /// Identical to [`new_smclk`](Counter::new_smclk) but sources `TASSEL=ACLK`.
+    /// With [`crate::clocks::configure_low_power`] ACLK is the 32.768 kHz LFXT
+    /// crystal, which **keeps running in LPM3** — so this counter measures time,
+    /// and (via a compare wake) wakes the part, through deep sleep, unlike the
+    /// SMCLK-sourced counter whose clock is gated off in LPM3. The tick rate is
+    /// `clocks.aclk() / div`; at 32.768 kHz ÷1 that is ~30.5 µs per tick and a
+    /// ~2 s wrap.
+    pub fn new_aclk(timer: pac::Timer0A3, clocks: &Clocks, div: Divider) -> Self {
+        timer.ta0ctl().write(|w| {
+            w.tassel().tassel_1(); // ACLK
+            match div {
+                Divider::Div1 => w.id().id_0(),
+                Divider::Div2 => w.id().id_1(),
+                Divider::Div4 => w.id().id_2(),
+                Divider::Div8 => w.id().id_3(),
+            };
+            w.mc().mc_2(); // continuous (free-run 0..=0xFFFF)
+            w.taclr().set_bit() // reset counter + divider
+        });
+
+        Counter {
+            timer,
+            tick_hz: clocks.aclk() / div.value(),
         }
     }
 
@@ -275,10 +306,53 @@ impl Counter {
         self.timer.ta0cctl1().modify(|_, w| w.cov().clear_bit());
     }
 
+    /// Schedule a one-shot wake-up when the counter next reaches `at_tick`,
+    /// using **CCR0 in compare mode**.
+    ///
+    /// Where [`configure_capture`](Counter::configure_capture) records the
+    /// counter on an input edge, *compare* mode does the opposite: it fires when
+    /// the free-running counter equals `TAxCCR0`. With the counter on ACLK
+    /// (see [`new_aclk`](Counter::new_aclk)) and the part in LPM3, that match
+    /// fires the **`TIMER0_A0`** interrupt and — if its handler is
+    /// `#[interrupt(wake_cpu)]` — wakes the CPU from deep sleep. Pick `at_tick`
+    /// as `now().wrapping_add(interval_ticks)`; the compare is on the 16-bit
+    /// counter, so the interval must be < 65536 ticks (~2 s at 32.768 kHz).
+    ///
+    /// The handler should call [`clear_wake_irq`] to disarm the one-shot (the
+    /// counter is free-running, so the match would otherwise recur every wrap).
+    pub fn schedule_wake(&self, at_tick: u16) {
+        // SAFETY: `bits` on a full-width value register is an unsafe writer.
+        unsafe { self.timer.ta0ccr0().write(|w| w.bits(at_tick)) };
+        // Compare mode (CAP=0, the reset value) with the CCR0 interrupt enabled;
+        // `write` also clears any stale CCIFG.
+        self.timer.ta0cctl0().write(|w| w.ccie().set_bit());
+    }
+
+    /// Disarm the CCR0 compare wake-up (clear `CCIE` and `CCIFG`).
+    pub fn cancel_wake(&self) {
+        self.timer.ta0cctl0().write(|w| w.ccie().clear_bit());
+    }
+
     /// Release the underlying timer peripheral (stops owning it). The counter is
     /// left running; stop it via the returned peripheral if desired.
     pub fn free(self) -> pac::Timer0A3 {
         self.timer
+    }
+}
+
+/// Disarm the CCR0 compare wake from inside the `TIMER0_A0` ISR.
+///
+/// The dedicated `TIMER0_A0` vector auto-clears CCR0's `CCIFG` on service, so
+/// the handler only needs to clear `CCIE` to stop the one-shot from re-firing on
+/// the next wrap. Provided as a free function (raw `TA0CCTL0` access) because the
+/// ISR does not own the [`Counter`], mirroring [`clear_overflow_irq`].
+pub fn clear_wake_irq() {
+    // TA0CCTL0 = Timer0_A3 base (0x0340) + 0x02; CCIE is bit 4.
+    const TA0CCTL0: usize = 0x0342;
+    const CCIE: u16 = 0x0010;
+    unsafe {
+        let p = TA0CCTL0 as *mut u16;
+        p.write_volatile(p.read_volatile() & !CCIE);
     }
 }
 

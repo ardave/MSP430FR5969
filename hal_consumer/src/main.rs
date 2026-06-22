@@ -4,17 +4,20 @@
 // "msp430-interrupt"` ABI (so they end in RETI, not RET). That ABI is gated
 // behind this nightly feature in the crate that *contains* the generated ISR.
 #![feature(abi_msp430_interrupt)]
+// `#[interrupt(wake_cpu)]` additionally emits a naked-asm trampoline (it clears
+// the low-power bits in the stacked SR), which needs inline asm enabled here.
+#![feature(asm_experimental_arch)]
 
 use core::cell::Cell;
 use critical_section::Mutex;
-use hal::delay::Delay;
-use hal::embedded_hal::delay::DelayNs as _;
+use hal::clocks::AclkSource;
 use hal::embedded_hal::digital::OutputPin;
 use hal::embedded_io::Write as _;
 use hal::gpio::GpioExt;
 // Vector-name shim: `#[msp430_rt::interrupt]` validates the handler name against
 // `interrupt::TIMER0_A1`, so the module must be in scope.
 use hal::interrupt;
+use hal::power;
 use hal::serial::{Config, SerialExt};
 use hal::timer::{Counter, Divider};
 use msp430_rt::entry;
@@ -33,17 +36,30 @@ static OVERFLOWS: Mutex<Cell<u16>> = Mutex::new(Cell::new(0));
 
 /// Timer0_A3 counter-overflow ISR — the project's first real interrupt.
 ///
-/// Fires every time the 16-bit counter wraps 0xFFFF→0x0000 (≈65.5 ms at the
-/// 1 MHz tick). Its whole job: clear the hardware flag and bump the software
-/// tally, which [`Counter::now64`] later combines with `TA0R` into a 32-bit
-/// timestamp. `#[msp430_rt::interrupt]` emits the correct `msp430-interrupt`
-/// ABI (RETI) and overrides the weak default vector by symbol name; the `cs`
-/// argument is the macro-supplied critical-section token.
+/// Fires every time the 16-bit counter wraps 0xFFFF→0x0000 (≈2 s with the
+/// counter on the 32.768 kHz ACLK). Its whole job: clear the hardware flag and
+/// bump the software tally, which [`Counter::now64`] later combines with `TA0R`
+/// into a 32-bit timestamp — and it keeps tallying *during* LPM3 sleep, since
+/// the ACLK overflow still fires (the CPU briefly wakes to service this plain
+/// handler, then RETIs back to sleep). `#[msp430_rt::interrupt]` emits the
+/// `msp430-interrupt` ABI (RETI) and overrides the weak default vector by name.
 #[msp430_rt::interrupt]
 fn TIMER0_A1(cs: CriticalSection) {
     hal::timer::clear_overflow_irq();
     let ovf = OVERFLOWS.borrow(cs);
     ovf.set(ovf.get().wrapping_add(1));
+}
+
+/// CCR0 compare-match ISR — wakes the CPU from LPM3 at the scheduled tick.
+///
+/// `#[interrupt(wake_cpu)]` is the key: it clears the low-power bits (CPUOFF/
+/// SCG0/SCG1) in the *stacked* status register before RETI, so the part returns
+/// to active mode at the `enter_lpm3()` call site instead of dropping back to
+/// sleep. The handler only disarms the one-shot wake; the elapsed-time
+/// measurement happens back in `main` once the CPU is running again.
+#[msp430_rt::interrupt(wake_cpu)]
+fn TIMER0_A0() {
+    hal::timer::clear_wake_irq();
 }
 
 // Watchdog Timer Password
@@ -76,21 +92,19 @@ fn main() -> ! {
 
     let p = hal::pac::Peripherals::take().unwrap();
 
-    // Configure the clock tree first: this owns the CS module and returns the
-    // resulting frequencies, which every clocked peripheral below reads from
-    // (single source of truth). Performance profile: MCLK stays 1 MHz; SMCLK is
-    // bumped to the full 8 MHz DCO for fine-resolution peripheral timing.
-    // (hal::clocks::configure_low_power puts ACLK on the 32.768 kHz LFXT crystal
-    // for LPM3 sleep instead — use that for the sleep-based watchdog.)
-    let clocks = hal::clocks::configure(p.cs);
+    // Configure the clock tree first (single source of truth for frequencies).
+    // Step 4 uses the **low-power** profile: MCLK/SMCLK = 1 MHz, and crucially
+    // ACLK on the 32.768 kHz LFXT crystal — the one clock that keeps running in
+    // LPM3, so an ACLK-sourced timer can measure and wake through deep sleep.
+    let clocks = hal::clocks::configure_low_power(p.cs);
 
     // Unlock GPIO pins (clear LOCKLPM5 in PM5CTL0) so the UART pin mux takes
     // effect.
     p.pmm.pm5ctl0().modify(|_, w| w.locklpm5().clear_bit());
 
-    // Configure eUSCI_A0 as a 9600 8N1 UART. BRCLK = SMCLK, now 8 MHz (from the
-    // clocks config above), so the baud math is derived from clocks.smclk()
-    // rather than a hard-coded number. UCA0TXD = P2.0, UCA0RXD = P2.1.
+    // Configure eUSCI_A0 as a 9600 8N1 UART. BRCLK = SMCLK = 1 MHz under the
+    // low-power profile; the baud math derives from clocks.smclk(), so it adapts
+    // automatically. UCA0TXD = P2.0, UCA0RXD = P2.1.
     let serial = p
         .usci_a0_uart_mode
         .into_uart(Config::new(clocks.smclk()).baud(9600));
@@ -105,66 +119,50 @@ fn main() -> ! {
     let mut red_led = port4.pin6.into_output();
 
     tx.write_all(b"MSP430FR5969 UART up @ 9600 8N1\r\n").ok();
+    if clocks.aclk_source() == AclkSource::Lfxt {
+        tx.write_all(b"ACLK = LFXT 32768 Hz (crystal)\r\n").ok();
+    } else {
+        tx.write_all(b"ACLK = VLO (crystal failed; timing approximate)\r\n").ok();
+    }
 
-    // Software cycle-counting delay, calibrated for the reset MCLK (1 MHz, the
-    // same clock SMCLK derives the UART BRCLK from above). This replaces the old
-    // hand-tuned black_box busy loop with the HAL's `DelayNs` impl; still a
-    // software delay (approximate, biased slightly long), but now expressed in
-    // real time units and shared logic. A hardware timer remains the proper fix
-    // once the clock/timer HAL exists. MCLK comes from the clocks config (1 MHz).
-    let mut delay = Delay::new(clocks.mclk());
+    // Free-running counter on Timer0_A3, clocked from **ACLK** ÷1. With the
+    // crystal that is 32.768 kHz → ~30.5 µs/tick and a ~2 s wrap. This clock
+    // survives LPM3, which is the whole point of step 4.
+    let counter = Counter::new_aclk(p.timer_0_a3, &clocks, Divider::Div1);
 
-    // Free-running counter on Timer0_A3, clocked from SMCLK (8 MHz here) ÷8 =
-    // 1 MHz, so one tick = 1 µs and the 16-bit counter wraps every 65.5 ms.
-    // This is an *independent* time reference from `delay`: the delay spends
-    // MCLK cycles, the counter measures SMCLK ticks, so timing one with the
-    // other is a genuine cross-check rather than a tautology.
-    let counter = Counter::new_smclk(p.timer_0_a3, &clocks, Divider::Div8);
-
-    // Step 2 left in place: overflow counting + GIE, so the counter still spans
-    // long intervals and the TIMER0_A1 ISR keeps tallying wraps underneath us.
+    // Overflow counting + GIE (from step 2): now64() spans the ~2 s wrap, and the
+    // TIMER0_A1 ISR keeps tallying even during sleep. GIE also lets the CCR0
+    // compare wake fire. Arm the overflow source, then unmask globally.
     counter.enable_overflow_interrupt();
     unsafe { msp430::interrupt::enable() };
 
-    // Step 3: hardware capture. CCR1 in capture mode latches TA0R the instant an
-    // edge arrives — here a software-toggled internal edge (no pin). The point:
-    // the captured timestamp reflects the *event*, not when software reads it.
-    counter.configure_capture();
+    // Ticks in one second at the ACLK rate — derived from the counter so it is
+    // correct whether ACLK ended up on the crystal (32768) or the VLO fallback.
+    // Stays < 65536, so it fits the 16-bit CCR0 compare.
+    let one_sec = counter.tick_hz() as u16;
 
-    // Each loop: mark an "event" (a software read at the trigger instant, plus a
-    // hardware capture at the same instant), then wait 5 ms to simulate latency
-    // between the event and servicing it. Afterwards, re-read the *frozen*
-    // capture and the *live* counter:
-    //   - jitter  = capture - trigger-read: a few µs, how closely the hardware
-    //     latch tracked the event (predict ~0).
-    //   - drift   = live - frozen: ~5000 µs, how wrong you'd be reading the
-    //     counter at service time instead of capturing at event time. The
-    //     capture is immune to it — that's the whole reason capture mode exists.
+    // Each iteration: timestamp, schedule a wake ~1 s out, drop into LPM3 (CPU,
+    // MCLK, SMCLK, DCO all off — only ACLK + this timer alive), and on wake
+    // measure how much time the counter logged while we slept. Predict ≈
+    // 1_000_000 µs: proof the timer ran through deep sleep. The print happens
+    // *after* wake so SMCLK (the UART clock) is running for it.
     let mut buf = [0u8; 12];
     loop {
-        red_led.set_high().ok();
+        let start = critical_section::with(|cs| counter.now64(OVERFLOWS.borrow(cs).get()));
+        counter.schedule_wake(counter.now().wrapping_add(one_sec));
+
+        // Both LEDs off during sleep (true low power); red blinks on each wake.
         green_led.set_low().ok();
-
-        let trigger = counter.now(); // software timestamp at ~the event instant
-        let cap = counter.software_capture(); // hardware latch at ~the event instant
-
-        delay.delay_ms(5); // latency between the event and getting around to it
-
-        let frozen = counter.capture_value(); // capture re-read 5 ms later — unchanged
-        let live = counter.now(); // live counter 5 ms later
-
-        let jitter = cap.wrapping_sub(trigger);
-        let drift = live.wrapping_sub(frozen);
-
-        tx.write_all(b"capture jitter ").ok();
-        tx.write_all(format_u32(counter.ticks_to_us(jitter as u32), &mut buf)).ok();
-        tx.write_all(b" us; 5ms-late read drifted ").ok();
-        tx.write_all(format_u32(counter.ticks_to_us(drift as u32), &mut buf)).ok();
-        tx.write_all(b" us (capture immune)\r\n").ok();
-
-        green_led.set_high().ok();
         red_led.set_low().ok();
-        delay.delay_ms(1000); // pacing between measurements
+        power::enter_lpm3(); // deep sleep until the CCR0 compare wakes us (~1 s)
+        red_led.set_high().ok();
+
+        let end = critical_section::with(|cs| counter.now64(OVERFLOWS.borrow(cs).get()));
+        let elapsed = end.wrapping_sub(start);
+
+        tx.write_all(b"slept in LPM3, measured ").ok();
+        tx.write_all(format_u32(counter.ticks_to_us(elapsed), &mut buf)).ok();
+        tx.write_all(b" us across deep sleep\r\n").ok();
     }
 }
 

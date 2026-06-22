@@ -100,16 +100,33 @@ LaunchPad button maps to a Timer0_A3 capture input and the one CCI1A pin
       interrupt (`CCIE`/`CCIFG`, decode `TA0IV`==0x02), with an interval helper
       that subtracts successive captures.
 
-## ☐ Step 4 — measure through deep sleep (ACLK source)
+## ✅ Step 4 — measure through deep sleep (ACLK source) (DONE)
 
-Goal: keep timing while the part is in LPM3.
+Goal: keep timing while the part is in LPM3. **Hardware-verified (2026-06-21).**
 
-- [ ] Add `Counter::new_aclk` sourcing the counter from **ACLK** (the 32.768 kHz
-      LFXT crystal via `clocks::configure_low_power`), which keeps running in
-      LPM3 — unlike SMCLK, which Step 1 uses and which is gated off in sleep.
-- [ ] Resolution becomes ~30.5 µs; combine with Step 2 overflow counting for
-      long sleep intervals.
-- [ ] Demo: sleep in LPM3, wake on a timer/pin event, report the slept duration.
+- [x] `Counter::new_aclk` sources the counter from **ACLK** (`TASSEL=1`). With
+      `clocks::configure_low_power` that is the 32.768 kHz LFXT crystal (~30.5 µs
+      tick, ~2 s wrap), which keeps running in LPM3 — unlike the SMCLK source.
+- [x] Wake mechanism = **CCR0 compare** (the dual of step 3's capture):
+      `Counter::schedule_wake(at_tick)` writes `TA0CCR0` and enables `CCIE`; the
+      match fires the dedicated **`TIMER0_A0`** vector. ISR is
+      `#[msp430_rt::interrupt(wake_cpu)]` — `objdump` shows it opens with
+      `bic.b #0xF0, 0(r1)`, clearing CPUOFF|OSCOFF|SCG0|SCG1 on the *stacked* SR
+      so RETI returns to active mode. It calls `clear_wake_irq()` (clears `CCIE`;
+      CCR0's `CCIFG` auto-clears on this single-source vector).
+- [x] `power::enter_lpm3()` — new `hal::power` module; one `bis #0xD8, r2`
+      (CPUOFF+SCG0+SCG1+GIE) atomically sleeps with interrupts on. OSCOFF stays
+      0 so the crystal lives. Consumer needed BOTH `#![feature(
+      abi_msp430_interrupt)]` and `#![feature(asm_experimental_arch)]` (the
+      `wake_cpu` variant emits a naked-asm trampoline).
+- [x] now64 + the step-2 overflow ISR keep tallying *during* sleep: an ACLK
+      overflow briefly wakes the CPU to run the plain `TIMER0_A1` handler, which
+      RETIs back to LPM3. So sleeps longer than one ~2 s wrap still measure right.
+- [x] Demo: sleep ~1 s in LPM3, measure on wake. **Result (stable):** `slept in
+      LPM3, measured 1000091 us across deep sleep` (target 32768 ticks = 1.000 s;
+      ~3 ticks = wake latency + read/schedule gap). Readings quantize in ±31 µs
+      steps = one 32.768 kHz tick (30.5 µs), *not* a VLO tick (~106 µs) —
+      conclusive proof the crystal drove the count through deep sleep.
 
 ## ☐ Step 5 — polish
 
