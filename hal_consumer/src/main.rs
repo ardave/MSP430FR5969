@@ -7,6 +7,7 @@ use hal::embedded_hal::digital::OutputPin;
 use hal::embedded_io::Write as _;
 use hal::gpio::GpioExt;
 use hal::serial::{Config, SerialExt};
+use hal::timer::{Counter, Divider};
 use msp430_rt::entry;
 
 // The `msp430` crate provides the critical-section implementation for MSP430
@@ -82,18 +83,60 @@ fn main() -> ! {
     // once the clock/timer HAL exists. MCLK comes from the clocks config (1 MHz).
     let mut delay = Delay::new(clocks.mclk());
 
-    // Alternate the two LEDs, printing the colour of whichever just turned on.
+    // Free-running counter on Timer0_A3, clocked from SMCLK (8 MHz here) ÷8 =
+    // 1 MHz, so one tick = 1 µs and the 16-bit counter wraps every 65.5 ms.
+    // This is an *independent* time reference from `delay`: the delay spends
+    // MCLK cycles, the counter measures SMCLK ticks, so timing one with the
+    // other is a genuine cross-check rather than a tautology.
+    let counter = Counter::new_smclk(p.timer_0_a3, &clocks, Divider::Div8);
+
+    // Characterize the software `Delay` with the hardware counter: measure a
+    // sweep of requested delays plus a zero-length baseline (back-to-back
+    // snapshots — the cost of the measurement apparatus itself). If the error is
+    // a *fixed* per-call overhead it shows up as a roughly constant excess on
+    // every row, dominating the 1 ms request and vanishing into the 50 ms one;
+    // if it's *proportional* the excess grows with the request. All requests
+    // stay well under the 65.5 ms wrap. The red LED is on while measuring.
+    let requests_ms = [0u32, 1, 5, 10, 50];
+    let mut buf = [0u8; 12];
     loop {
         red_led.set_high().ok();
         green_led.set_low().ok();
-        tx.write_all(b"red\r\n").ok();
-        delay.delay_ms(1000);
+        for &ms in requests_ms.iter() {
+            let start = counter.now();
+            delay.delay_ms(ms);
+            let ticks = counter.elapsed_since(start);
+            tx.write_all(b"req ").ok();
+            tx.write_all(format_u32(ms, &mut buf)).ok();
+            tx.write_all(b" ms -> measured ").ok();
+            tx.write_all(format_u32(counter.ticks_to_us(ticks), &mut buf)).ok();
+            tx.write_all(b" us\r\n").ok();
+        }
+        tx.write_all(b"---\r\n").ok();
 
         green_led.set_high().ok();
         red_led.set_low().ok();
-        tx.write_all(b"green\r\n").ok();
-        delay.delay_ms(1000);
+        delay.delay_ms(1000); // pacing between sweeps — not measured
     }
+}
+
+/// Format `n` as decimal ASCII into `buf`, returning the written slice.
+///
+/// Hand-rolled because `hal::serial` deliberately does not implement
+/// `core::fmt::Write` — pulling in `core::fmt` would blow the FRAM budget (see
+/// CLAUDE.md). Digits are generated least-significant first into the tail of the
+/// buffer, then the filled tail is returned.
+fn format_u32(mut n: u32, buf: &mut [u8; 12]) -> &[u8] {
+    let mut i = buf.len();
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    &buf[i..]
 }
 
 #[panic_handler]

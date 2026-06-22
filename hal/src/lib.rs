@@ -8,6 +8,7 @@ pub mod clocks;
 pub mod delay;
 pub mod gpio;
 pub mod serial;
+pub mod timer;
 
 pub use embedded_hal;
 pub use embedded_hal_nb;
