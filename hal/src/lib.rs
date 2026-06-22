@@ -9,6 +9,7 @@ pub mod delay;
 pub mod gpio;
 pub mod power;
 pub mod serial;
+mod ticks;
 pub mod timer;
 
 pub use embedded_hal;

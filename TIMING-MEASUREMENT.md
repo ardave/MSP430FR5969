@@ -128,10 +128,18 @@ Goal: keep timing while the part is in LPM3. **Hardware-verified (2026-06-21).**
       steps = one 32.768 kHz tick (30.5 µs), *not* a VLO tick (~106 µs) —
       conclusive proof the crystal drove the count through deep sleep.
 
-## ☐ Step 5 — polish
+## ◐ Step 5 — polish
 
-- [ ] Host-side unit test for the tick↔time math, `baud-test`-style (pure
-      arithmetic; guards the divider/overflow conversion).
+- [x] **Host-side unit test for the tick↔time math** (done 2026-06-21). The pure
+      arithmetic was extracted from `Counter`'s methods into a dependency-free
+      `hal/src/ticks.rs` (`ticks_to_us`, `ticks_to_ns`, `assemble_now64`),
+      mirroring `baud.rs`. New detached crate `timer-test/` `include!`s that
+      source and checks it on the host (`cd timer-test && cargo +nightly test` —
+      7 tests). Covers exact conversions at the project's real rates (8 MHz,
+      1 MHz, 32768 Hz, VLO), the `u64`-widening overflow guard, truncation, the
+      `now64` bit-packing, and reproduces the exact Step 4 hardware readings
+      (32771→1000091, 32772→1000122 µs). Verified it fails on a wrong-but-
+      compiling edit, so it genuinely guards the shipping source.
 - [ ] Consider an `embedded-hal` trait impl if one fits
       (`embedded_hal::delay` is for delays, not measurement; a count-down /
       capture trait may suit — evaluate when the API settles).

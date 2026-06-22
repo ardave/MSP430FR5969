@@ -203,18 +203,18 @@ impl Counter {
     ///
     /// Takes a `u32` tick count so it serves both the 16-bit
     /// [`elapsed_since`](Counter::elapsed_since) path (widen the `u16`) and the
-    /// 32-bit [`now64`](Counter::now64) path. Done in `u64` so `ticks *
-    /// 1_000_000` cannot overflow; the divide brings it back into range. The
-    /// `u32` result holds up to ~4295 s (≈71 min) of microseconds.
+    /// 32-bit [`now64`](Counter::now64) path. The `u32` result holds up to
+    /// ~4295 s (≈71 min) of microseconds. The arithmetic lives in
+    /// [`crate::ticks`] so it can be host-tested.
     pub fn ticks_to_us(&self, ticks: u32) -> u32 {
-        (ticks as u64 * 1_000_000 / self.tick_hz as u64) as u32
+        crate::ticks::ticks_to_us(ticks, self.tick_hz)
     }
 
     /// Convert a tick delta to nanoseconds. Resolution is still one tick — at
     /// 1 MHz this only ever reports whole microseconds. The `u32` result holds
     /// only ~4.3 s of nanoseconds, so use it for short deltas.
     pub fn ticks_to_ns(&self, ticks: u32) -> u32 {
-        (ticks as u64 * 1_000_000_000 / self.tick_hz as u64) as u32
+        crate::ticks::ticks_to_ns(ticks, self.tick_hz)
     }
 
     /// Enable the counter-overflow interrupt (`TAIE`).
@@ -252,7 +252,7 @@ impl Counter {
             ovf = ovf.wrapping_add(1);
             cnt = self.now();
         }
-        ((ovf as u32) << 16) | cnt as u32
+        crate::ticks::assemble_now64(ovf, cnt)
     }
 
     /// Configure capture/compare channel **CCR1** for software-triggered

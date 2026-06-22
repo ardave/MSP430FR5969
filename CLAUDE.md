@@ -23,15 +23,21 @@ cargo +nightly build
 # Check without building
 cargo +nightly check
 
-# Run the host-side baud-rate math tests (NOT on the msp430 target)
-cd baud-test && cargo +nightly test
+# Run the host-side math tests (NOT on the msp430 target)
+cd baud-test && cargo +nightly test    # UART baud-rate math
+cd timer-test && cargo +nightly test   # timer tick<->time math
 ```
 
 Requires the **nightly** Rust toolchain (for `-Z build-std=core` on the `msp430-none-elf` target). The TI MSP430 GCC toolchain must be installed — the linker path is hardcoded in `.cargo/config.toml`.
 
 ## Testing
 
-Most firmware can only be validated on hardware, but pure logic is tested on the host. `baud-test/` is a small crate **detached from the workspace** (its own `[workspace]` table + `.cargo/config.toml` that overrides the target back to the host) that `include!`s the real `hal/src/baud.rs` and checks `compute_baud`/`ucbrs_lookup` against SLAU367P Table 30-5. Because it includes the actual driver source, a bad edit to `UCBRS_TABLE` or the algorithm fails the tests. The pass/fail criterion is the resulting average bit-timing error (< 2%), since the driver follows the datasheet *procedure* while Table 30-5 lists values from a separate lowest-error search — the two legitimately differ in some rows (mode choice near N≈16, and alternate `UCBRSx` bytes). Run with `cd baud-test && cargo +nightly test`. The host triple in `baud-test/.cargo/config.toml` is `aarch64-apple-darwin`; change it for other hosts.
+Most firmware can only be validated on hardware, but pure logic is tested on the host. The pattern: keep the pure arithmetic in a dependency-free file (no PAC/HAL types, `//` not `//!` comments so it can be `include!`d mid-crate), and have a **detached test crate** (its own `[workspace]` table + `.cargo/config.toml` overriding the target back to the host triple `aarch64-apple-darwin`, with `build-std = ["std"]` to neutralize the inherited `build-std = ["core"]`) `include!` that real source. Because the test includes the actual shipping source, a bad edit to the math fails the tests. Two such crates exist:
+
+- `baud-test/` includes `hal/src/baud.rs` and checks `compute_baud`/`ucbrs_lookup` against SLAU367P Table 30-5. The pass/fail criterion is the resulting average bit-timing error (< 2%), since the driver follows the datasheet *procedure* while Table 30-5 lists values from a separate lowest-error search — the two legitimately differ in some rows (mode choice near N≈16, and alternate `UCBRSx` bytes).
+- `timer-test/` includes `hal/src/ticks.rs` (the tick↔time math `Counter` delegates to: `ticks_to_us`/`ticks_to_ns`/`assemble_now64`) and checks exact conversions, the `u64`-widening overflow guard, and the `now64` bit-packing.
+
+Run with `cd <crate> && cargo +nightly test`. The host triple in each `.cargo/config.toml` is `aarch64-apple-darwin`; change it for other hosts.
 
 ## Architecture
 
@@ -41,6 +47,7 @@ Most firmware can only be validated on hardware, but pure logic is tested on the
 - `pac_consumer/` — Test/experimentation binary that exercises the PAC directly. Entry point is `_start()` in `src/main.rs`.
 - `hal_consumer/` — Test/experimentation binary that exercises the HAL. Minimal `_start()` entry point.
 - `baud-test/` — Host-target unit tests for the UART baud-rate math (see Testing below). Not part of the workspace.
+- `timer-test/` — Host-target unit tests for the timer tick↔time math (`hal/src/ticks.rs`). Not part of the workspace.
 
 **Key configuration:**
 - `.cargo/config.toml` — Sets `msp430-none-elf` target, enables `build-std = ["core"]`, configures TI GCC linker and `mspdebug tilib` as the runner.
