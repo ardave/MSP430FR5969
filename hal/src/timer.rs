@@ -361,31 +361,27 @@ impl Counter {
 ///
 /// The dedicated `TIMER0_A0` vector auto-clears CCR0's `CCIFG` on service, so
 /// the handler only needs to clear `CCIE` to stop the one-shot from re-firing on
-/// the next wrap. Provided as a free function (raw `TA0CCTL0` access) because the
-/// ISR does not own the [`Counter`], mirroring [`clear_overflow_irq`].
+/// the next wrap. Provided as a free function because the ISR does not own the
+/// [`Counter`], mirroring [`clear_overflow_irq`].
 pub fn clear_wake_irq() {
-    // TA0CCTL0 = Timer0_A3 base (0x0340) + 0x02; CCIE is bit 4.
-    const TA0CCTL0: usize = 0x0342;
-    const CCIE: u16 = 0x0010;
-    unsafe {
-        let p = TA0CCTL0 as *mut u16;
-        p.write_volatile(p.read_volatile() & !CCIE);
-    }
+    // SAFETY: fabricates a second Timer0_A3 handle to clear one flag the
+    // Counter-owning code never writes. `steal` changes the access *mechanism*
+    // (typed field vs. raw address), not the concurrency: this is the same
+    // disjoint-register access as before.
+    let timer = unsafe { pac::Timer0A3::steal() };
+    timer.ta0cctl0().modify(|_, w| w.ccie().clear_bit());
 }
 
 /// Clear a pending Timer0_A3 overflow interrupt (`TAIFG`).
 ///
 /// Intended to be called from the `TIMER0_A1` ISR, which does not own the
-/// [`Counter`]; it therefore reaches `TA0CTL` by raw address (consistent with
-/// the rest of this HAL) and clears only `TAIFG`, leaving the source/divider/
-/// mode/enable bits intact. The read-modify-write cannot race the hardware
-/// re-setting `TAIFG` — the next overflow is a full counter period away.
+/// [`Counter`]; it clears only `TAIFG`, leaving the source/divider/mode/enable
+/// bits intact. The read-modify-write cannot race the hardware re-setting
+/// `TAIFG` — the next overflow is a full counter period away.
 pub fn clear_overflow_irq() {
-    // TA0CTL = Timer0_A3 base (0x0340); TAIFG is bit 0.
-    const TA0CTL: usize = 0x0340;
-    const TAIFG: u16 = 0x0001;
-    unsafe {
-        let p = TA0CTL as *mut u16;
-        p.write_volatile(p.read_volatile() & !TAIFG);
-    }
+    // SAFETY: a stolen Timer0_A3 handle touching only TAIFG via read-modify-
+    // write — disjoint from the bits the Counter writes, and the next overflow
+    // is a full period away, so it cannot race the hardware re-setting the flag.
+    let timer = unsafe { pac::Timer0A3::steal() };
+    timer.ta0ctl().modify(|_, w| w.taifg().clear_bit());
 }
