@@ -9,6 +9,7 @@ pub mod delay;
 pub mod gpio;
 pub mod power;
 pub mod serial;
+pub mod spi;
 mod ticks;
 pub mod timer;
 

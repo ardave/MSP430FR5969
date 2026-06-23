@@ -245,7 +245,7 @@ impl Counter {
     /// matches the incremented high half. (The ISR will also count this same
     /// overflow once the CS ends; that is fine — it only updates the software
     /// tally for *next* time, it does not double-count this reading.)
-    pub fn now64(&self, overflows: u16) -> u32 {
+    pub fn now32(&self, overflows: u16) -> u32 {
         let mut ovf = overflows;
         let mut cnt = self.now();
         if self.overflow_pending() {
