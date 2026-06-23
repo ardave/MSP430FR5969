@@ -1,0 +1,18 @@
+# Standalone host-target test for the timer tick<->time math.
+#
+# Detached from the main workspace (note the empty [workspace] table) and given
+# its own .cargo/config.toml so it builds for the host instead of inheriting the
+# repo's msp430-none-elf target. It `include!`s the REAL hal/src/ticks.rs source,
+# so an incorrect edit to the conversion arithmetic fails these tests.
+#
+# Run with:  cd timer-test && cargo test
+[package]
+name = "timer-test"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"
