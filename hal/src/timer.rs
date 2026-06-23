@@ -75,7 +75,7 @@
 //! UART's BRCLK runs on. SMCLK is gated off in LPM3, so an SMCLK-sourced counter
 //! does *not* run in deep sleep. To measure (and wake) through LPM3, use
 //! [`Counter::new_aclk`] instead — ACLK on the 32.768 kHz crystal keeps ticking
-//! in LPM3 — and arm [`Counter::schedule_wake`] (a CCR0 compare) to fire the
+//! in LPM3 — and arm [`Counter::schedule_wake_in`] (a CCR0 compare) to fire the
 //! `TIMER0_A0` interrupt at a chosen tick. Either way the tick rate is read from
 //! [`Clocks`] (single source of truth) exactly as [`crate::delay::Delay`] reads
 //! MCLK, so the tick↔time math tracks whichever clock profile you configured.
@@ -217,6 +217,18 @@ impl Counter {
         crate::ticks::ticks_to_ns(ticks, self.tick_hz)
     }
 
+    /// Ticks corresponding to `us` microseconds at this counter's rate, or
+    /// `None` if that is longer than one counter wrap and so cannot be expressed
+    /// as a single 16-bit CCR compare.
+    ///
+    /// This is the safe way to size a [`schedule_wake_in`](Counter::schedule_wake_in)
+    /// interval from a real duration: it range-checks against the 16-bit wrap
+    /// instead of silently truncating a `u32` tick count to `u16`. The math lives
+    /// in [`crate::ticks`] so it is host-tested alongside the forward conversions.
+    pub fn ticks_in_us(&self, us: u32) -> Option<u16> {
+        crate::ticks::us_to_ticks(us, self.tick_hz)
+    }
+
     /// Enable the counter-overflow interrupt (`TAIE`).
     ///
     /// Once enabled, each time `TAxR` rolls over 0xFFFF→0x0000 the hardware sets
@@ -306,21 +318,26 @@ impl Counter {
         self.timer.ta0cctl1().modify(|_, w| w.cov().clear_bit());
     }
 
-    /// Schedule a one-shot wake-up when the counter next reaches `at_tick`,
-    /// using **CCR0 in compare mode**.
+    /// Schedule a one-shot wake-up `interval` ticks from now, using **CCR0 in
+    /// compare mode**.
     ///
     /// Where [`configure_capture`](Counter::configure_capture) records the
     /// counter on an input edge, *compare* mode does the opposite: it fires when
     /// the free-running counter equals `TAxCCR0`. With the counter on ACLK
     /// (see [`new_aclk`](Counter::new_aclk)) and the part in LPM3, that match
     /// fires the **`TIMER0_A0`** interrupt and — if its handler is
-    /// `#[interrupt(wake_cpu)]` — wakes the CPU from deep sleep. Pick `at_tick`
-    /// as `now().wrapping_add(interval_ticks)`; the compare is on the 16-bit
-    /// counter, so the interval must be < 65536 ticks (~2 s at 32.768 kHz).
+    /// `#[interrupt(wake_cpu)]` — wakes the CPU from deep sleep.
+    ///
+    /// The target tick is computed internally as `now().wrapping_add(interval)`,
+    /// so the caller never hand-rolls the wrap arithmetic. Because `interval` is
+    /// a `u16` it is structurally less than one full counter period (65536
+    /// ticks, ~2 s at 32.768 kHz); size it from a real duration with
+    /// [`ticks_in_us`](Counter::ticks_in_us), which range-checks the conversion.
     ///
     /// The handler should call [`clear_wake_irq`] to disarm the one-shot (the
     /// counter is free-running, so the match would otherwise recur every wrap).
-    pub fn schedule_wake(&self, at_tick: u16) {
+    pub fn schedule_wake_in(&self, interval: u16) {
+        let at_tick = self.now().wrapping_add(interval);
         // SAFETY: `bits` on a full-width value register is an unsafe writer.
         unsafe { self.timer.ta0ccr0().write(|w| w.bits(at_tick)) };
         // Compare mode (CAP=0, the reset value) with the CCR0 interrupt enabled;

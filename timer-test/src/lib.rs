@@ -113,4 +113,55 @@ mod tests {
         assert_eq!(span, 65_536);
         assert_eq!(ticks_to_us(span, LFXT), 2_000_000); // 2 s
     }
+
+    /// `us_to_ticks` is the inverse of `ticks_to_us` for representative
+    /// durations, truncating toward zero just like the forward conversion.
+    #[test]
+    fn us_to_ticks_exact_at_common_rates() {
+        // (us, tick_hz, expected_ticks)
+        let cases: &[(u32, u32, u16)] = &[
+            (0, LFXT, 0),
+            (1_000_000, LFXT, 32_768),     // 1 s on the crystal = 32768 ticks
+            (30, LFXT, 0),                 // < 1 tick (30.5 µs) -> 0
+            (31, LFXT, 1),                 // first whole tick
+            (1_000, SMCLK_1M, 1_000),      // 1 ms at 1 MHz = 1000 ticks
+            (1, SMCLK_1M, 1),
+            (1_000, LFXT, 32),             // 1 ms -> 32.768 -> 32 (trunc)
+        ];
+        for &(us, hz, want) in cases {
+            assert_eq!(us_to_ticks(us, hz), Some(want), "us_to_ticks({us}, {hz})");
+        }
+    }
+
+    /// The whole point of `us_to_ticks` over an `as u16` cast: it rejects any
+    /// interval that does not fit one 16-bit wrap instead of silently
+    /// truncating. The boundary is exactly 65536 ticks (a full wrap, which maps
+    /// `now` onto itself) — `Some(65535)` just under, `None` at and above.
+    #[test]
+    fn us_to_ticks_rejects_intervals_past_one_wrap() {
+        // At the crystal rate the last representable interval is 65535 ticks,
+        // reached at 1_999_970 µs and held until just under 2_000_000 µs; one
+        // full wrap (65536 ticks) lands exactly at 2_000_000 µs and is rejected.
+        assert_eq!(us_to_ticks(1_999_970, LFXT), Some(65_535)); // first µs that floors to 65535
+        assert_eq!(us_to_ticks(1_999_999, LFXT), Some(65_535)); // last µs before the wrap
+        assert_eq!(us_to_ticks(2_000_000, LFXT), None); // exactly one wrap -> rejected
+        assert_eq!(us_to_ticks(3_000_000, LFXT), None); // well past one wrap
+
+        // At 1 MHz a 16-bit counter wraps every 65536 µs; this is exactly where
+        // the old `tick_hz() as u16` cast silently truncated.
+        assert_eq!(us_to_ticks(65_535, SMCLK_1M), Some(65_535));
+        assert_eq!(us_to_ticks(65_536, SMCLK_1M), None);
+        // 1 s at 1 MHz = 1_000_000 ticks: hopelessly past one wrap, must be None
+        // (the cast would have yielded 16960).
+        assert_eq!(us_to_ticks(1_000_000, SMCLK_1M), None);
+    }
+
+    /// Guard the `u64` widening on the multiply, mirroring the forward
+    /// conversion's guard: `us * tick_hz` overflows `u32` long before the result
+    /// would, so the product must be computed in `u64`.
+    #[test]
+    fn us_to_ticks_requires_u64_widening() {
+        // 1_000_000 µs * 32_768 Hz = 3.27e13, far past u32; result 32768 fits u16.
+        assert_eq!(us_to_ticks(1_000_000, LFXT), Some(32_768));
+    }
 }

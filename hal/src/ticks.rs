@@ -25,6 +25,25 @@ pub(crate) fn ticks_to_ns(ticks: u32, tick_hz: u32) -> u32 {
     (ticks as u64 * 1_000_000_000 / tick_hz as u64) as u32
 }
 
+/// Convert microseconds to ticks at `tick_hz` ticks/second, or `None` if the
+/// interval is longer than one 16-bit counter wrap (≥ 65536 ticks).
+///
+/// This is the inverse of [`ticks_to_us`] and the safe replacement for an
+/// `as u16` narrowing: the multiply is widened to `u64` (worst case
+/// `u32::MAX * 1_000_000`), and the result is rejected rather than truncated
+/// when it will not fit a single `u16` CCR compare. `Some` therefore always
+/// carries a value that a 16-bit compare can represent unambiguously (a full
+/// 65536-tick wrap maps `now` onto itself, so it is excluded). Truncates toward
+/// zero like the forward conversion.
+pub(crate) fn us_to_ticks(us: u32, tick_hz: u32) -> Option<u16> {
+    let ticks = us as u64 * tick_hz as u64 / 1_000_000;
+    if ticks > u16::MAX as u64 {
+        None
+    } else {
+        Some(ticks as u16)
+    }
+}
+
 /// Assemble a 32-bit timestamp from the software overflow tally (`overflows`,
 /// the high 16 bits) and the hardware counter (`cnt`, the low 16 bits).
 ///
