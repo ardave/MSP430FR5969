@@ -18,7 +18,7 @@
 //!
 //! This is a software delay, so it is **approximate** and biased slightly long:
 //!
-//! - The inner loop costs [`CYCLES_PER_ITER`] cycles per iteration; the
+//! - The inner loop costs `CYCLES_PER_ITER` cycles per iteration; the
 //!   requested cycle count is divided by that, so sub-`CYCLES_PER_ITER`
 //!   remainders are rounded down.
 //! - The per-call function/loop-setup overhead (a handful of cycles) is not

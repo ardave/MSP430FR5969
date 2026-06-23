@@ -2,7 +2,7 @@
 //!
 //! This crate `include!`s the REAL conversion source (`hal/src/ticks.rs`) so the
 //! tests exercise the exact code that ships in firmware — a bad edit to
-//! `ticks_to_us` / `ticks_to_ns` / `assemble_now64` (e.g. dropping the `u64`
+//! `ticks_to_us` / `ticks_to_ns` / `assemble_now32` (e.g. dropping the `u64`
 //! widening, or mis-packing the 32-bit timestamp) will fail these tests.
 
 #![allow(dead_code)]
@@ -91,15 +91,15 @@ mod tests {
         assert_eq!(ticks_to_us(9, SMCLK_8M), 1);
     }
 
-    /// `assemble_now64` packs the overflow tally as the high 16 bits and the
+    /// `assemble_now32` packs the overflow tally as the high 16 bits and the
     /// counter as the low 16 bits.
     #[test]
-    fn assemble_now64_packs_high_low() {
-        assert_eq!(assemble_now64(0, 0), 0);
-        assert_eq!(assemble_now64(0, 0xFFFF), 0x0000_FFFF);
-        assert_eq!(assemble_now64(1, 0), 0x0001_0000); // one wrap = 65536
-        assert_eq!(assemble_now64(0x000F, 0x4242), 0x000F_4242);
-        assert_eq!(assemble_now64(0xFFFF, 0xFFFF), 0xFFFF_FFFF);
+    fn assemble_now32_packs_high_low() {
+        assert_eq!(assemble_now32(0, 0), 0);
+        assert_eq!(assemble_now32(0, 0xFFFF), 0x0000_FFFF);
+        assert_eq!(assemble_now32(1, 0), 0x0001_0000); // one wrap = 65536
+        assert_eq!(assemble_now32(0x000F, 0x4242), 0x000F_4242);
+        assert_eq!(assemble_now32(0xFFFF, 0xFFFF), 0xFFFF_FFFF);
     }
 
     /// A round-trip sanity check: assemble a wide timestamp, then convert the
@@ -107,8 +107,8 @@ mod tests {
     /// crystal rate is exactly 2 seconds.
     #[test]
     fn one_wrap_at_crystal_is_two_seconds() {
-        let start = assemble_now64(0, 0);
-        let end = assemble_now64(1, 0); // exactly one wrap later
+        let start = assemble_now32(0, 0);
+        let end = assemble_now32(1, 0); // exactly one wrap later
         let span = end.wrapping_sub(start);
         assert_eq!(span, 65_536);
         assert_eq!(ticks_to_us(span, LFXT), 2_000_000); // 2 s

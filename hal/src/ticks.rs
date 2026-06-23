@@ -48,8 +48,8 @@ pub(crate) fn us_to_ticks(us: u32, tick_hz: u32) -> Option<u16> {
 /// the high 16 bits) and the hardware counter (`cnt`, the low 16 bits).
 ///
 /// The caller is responsible for having already folded in any pending overflow
-/// (see `Counter::now64`); this is just the bit-packing half, isolated so it is
+/// (see `Counter::now32`); this is just the bit-packing half, isolated so it is
 /// testable without hardware.
-pub(crate) fn assemble_now64(overflows: u16, cnt: u16) -> u32 {
+pub(crate) fn assemble_now32(overflows: u16, cnt: u16) -> u32 {
     ((overflows as u32) << 16) | cnt as u32
 }

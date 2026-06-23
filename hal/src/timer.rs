@@ -41,7 +41,7 @@
 //! than one wrap period**. To time anything longer, enable the overflow
 //! interrupt with [`Counter::enable_overflow_interrupt`] and have the
 //! `TIMER0_A1` ISR tally rollovers in a shared counter; then
-//! [`Counter::now64`] assembles those tallies with `TAxR` into a 32-bit
+//! [`Counter::now32`] assembles those tallies with `TAxR` into a 32-bit
 //! timestamp (~71 minutes before *it* wraps, at the 1 MHz tick). The ISR, the
 //! shared counter, and enabling interrupts globally live in the application —
 //! see `hal_consumer` for a worked example.
@@ -64,7 +64,7 @@
 //!
 //! Reading a 32-bit timestamp out of a 16-bit counter plus a software high word
 //! is not atomic: the counter can roll over (setting `TAIFG`) in the window
-//! between sampling the high word and the low word. [`now64`](Counter::now64)
+//! between sampling the high word and the low word. [`now32`](Counter::now32)
 //! must therefore be called inside a critical section (interrupts masked, so the
 //! ISR cannot run mid-read) and reconciles a *pending-but-uncounted* overflow
 //! itself by checking `TAIFG` — see its docs.
@@ -194,7 +194,7 @@ impl Counter {
 
     /// Ticks elapsed since the `start` snapshot, valid for intervals shorter
     /// than one full counter period (see the resolution/range table). For
-    /// longer intervals use [`now64`](Counter::now64) snapshots instead.
+    /// longer intervals use [`now32`](Counter::now32) snapshots instead.
     pub fn elapsed_since(&self, start: u16) -> u16 {
         self.now().wrapping_sub(start)
     }
@@ -203,9 +203,9 @@ impl Counter {
     ///
     /// Takes a `u32` tick count so it serves both the 16-bit
     /// [`elapsed_since`](Counter::elapsed_since) path (widen the `u16`) and the
-    /// 32-bit [`now64`](Counter::now64) path. The `u32` result holds up to
+    /// 32-bit [`now32`](Counter::now32) path. The `u32` result holds up to
     /// ~4295 s (≈71 min) of microseconds. The arithmetic lives in
-    /// [`crate::ticks`] so it can be host-tested.
+    /// the `ticks` module so it can be host-tested.
     pub fn ticks_to_us(&self, ticks: u32) -> u32 {
         crate::ticks::ticks_to_us(ticks, self.tick_hz)
     }
@@ -224,7 +224,7 @@ impl Counter {
     /// This is the safe way to size a [`schedule_wake_in`](Counter::schedule_wake_in)
     /// interval from a real duration: it range-checks against the 16-bit wrap
     /// instead of silently truncating a `u32` tick count to `u16`. The math lives
-    /// in [`crate::ticks`] so it is host-tested alongside the forward conversions.
+    /// in the `ticks` module so it is host-tested alongside the forward conversions.
     pub fn ticks_in_us(&self, us: u32) -> Option<u16> {
         crate::ticks::us_to_ticks(us, self.tick_hz)
     }
@@ -235,7 +235,7 @@ impl Counter {
     /// `TAIFG` and fires the **`TIMER0_A1`** vector. The application must define
     /// that ISR (msp430-rt `#[interrupt] fn TIMER0_A1`), clear the flag from it
     /// with [`clear_overflow_irq`], tally the rollover in a shared counter, and
-    /// enable interrupts globally (set GIE). See [`now64`](Counter::now64).
+    /// enable interrupts globally (set GIE). See [`now32`](Counter::now32).
     pub fn enable_overflow_interrupt(&self) {
         self.timer.ta0ctl().modify(|_, w| w.taie().set_bit());
     }
@@ -264,7 +264,7 @@ impl Counter {
             ovf = ovf.wrapping_add(1);
             cnt = self.now();
         }
-        crate::ticks::assemble_now64(ovf, cnt)
+        crate::ticks::assemble_now32(ovf, cnt)
     }
 
     /// Configure capture/compare channel **CCR1** for software-triggered
@@ -294,7 +294,7 @@ impl Counter {
     /// latches), then returns it to GND to re-arm for next time. The two field
     /// writes also give the synchronous capture (`SCS`) a clock edge to complete
     /// before [`capture_value`](Counter::capture_value) reads `TAxCCR1`. Requires
-    /// [`configure_capture`] first.
+    /// [`configure_capture`](Counter::configure_capture) first.
     pub fn software_capture(&self) -> u16 {
         self.timer.ta0cctl1().modify(|_, w| w.ccis().ccis_3()); // → VCC: rising edge → capture
         self.timer.ta0cctl1().modify(|_, w| w.ccis().ccis_2()); // → GND: re-arm (falling, ignored)
