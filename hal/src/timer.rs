@@ -41,7 +41,7 @@
 //! than one wrap period**. To time anything longer, enable the overflow
 //! interrupt with [`Counter::enable_overflow_interrupt`] and have the
 //! `TIMER0_A1` ISR tally rollovers in a shared counter; then
-//! [`Counter::now64`] assembles those tallies with `TAxR` into a 32-bit
+//! [`Counter::now32`] assembles those tallies with `TAxR` into a 32-bit
 //! timestamp (~71 minutes before *it* wraps, at the 1 MHz tick). The ISR, the
 //! shared counter, and enabling interrupts globally live in the application —
 //! see `hal_consumer` for a worked example.
@@ -64,7 +64,7 @@
 //!
 //! Reading a 32-bit timestamp out of a 16-bit counter plus a software high word
 //! is not atomic: the counter can roll over (setting `TAIFG`) in the window
-//! between sampling the high word and the low word. [`now64`](Counter::now64)
+//! between sampling the high word and the low word. [`now32`](Counter::now32)
 //! must therefore be called inside a critical section (interrupts masked, so the
 //! ISR cannot run mid-read) and reconciles a *pending-but-uncounted* overflow
 //! itself by checking `TAIFG` — see its docs.
@@ -75,7 +75,7 @@
 //! UART's BRCLK runs on. SMCLK is gated off in LPM3, so an SMCLK-sourced counter
 //! does *not* run in deep sleep. To measure (and wake) through LPM3, use
 //! [`Counter::new_aclk`] instead — ACLK on the 32.768 kHz crystal keeps ticking
-//! in LPM3 — and arm [`Counter::schedule_wake`] (a CCR0 compare) to fire the
+//! in LPM3 — and arm [`Counter::schedule_wake_in`] (a CCR0 compare) to fire the
 //! `TIMER0_A0` interrupt at a chosen tick. Either way the tick rate is read from
 //! [`Clocks`] (single source of truth) exactly as [`crate::delay::Delay`] reads
 //! MCLK, so the tick↔time math tracks whichever clock profile you configured.
@@ -194,7 +194,7 @@ impl Counter {
 
     /// Ticks elapsed since the `start` snapshot, valid for intervals shorter
     /// than one full counter period (see the resolution/range table). For
-    /// longer intervals use [`now64`](Counter::now64) snapshots instead.
+    /// longer intervals use [`now32`](Counter::now32) snapshots instead.
     pub fn elapsed_since(&self, start: u16) -> u16 {
         self.now().wrapping_sub(start)
     }
@@ -203,9 +203,9 @@ impl Counter {
     ///
     /// Takes a `u32` tick count so it serves both the 16-bit
     /// [`elapsed_since`](Counter::elapsed_since) path (widen the `u16`) and the
-    /// 32-bit [`now64`](Counter::now64) path. The `u32` result holds up to
+    /// 32-bit [`now32`](Counter::now32) path. The `u32` result holds up to
     /// ~4295 s (≈71 min) of microseconds. The arithmetic lives in
-    /// [`crate::ticks`] so it can be host-tested.
+    /// the `ticks` module so it can be host-tested.
     pub fn ticks_to_us(&self, ticks: u32) -> u32 {
         crate::ticks::ticks_to_us(ticks, self.tick_hz)
     }
@@ -217,13 +217,25 @@ impl Counter {
         crate::ticks::ticks_to_ns(ticks, self.tick_hz)
     }
 
+    /// Ticks corresponding to `us` microseconds at this counter's rate, or
+    /// `None` if that is longer than one counter wrap and so cannot be expressed
+    /// as a single 16-bit CCR compare.
+    ///
+    /// This is the safe way to size a [`schedule_wake_in`](Counter::schedule_wake_in)
+    /// interval from a real duration: it range-checks against the 16-bit wrap
+    /// instead of silently truncating a `u32` tick count to `u16`. The math lives
+    /// in the `ticks` module so it is host-tested alongside the forward conversions.
+    pub fn ticks_in_us(&self, us: u32) -> Option<u16> {
+        crate::ticks::us_to_ticks(us, self.tick_hz)
+    }
+
     /// Enable the counter-overflow interrupt (`TAIE`).
     ///
     /// Once enabled, each time `TAxR` rolls over 0xFFFF→0x0000 the hardware sets
     /// `TAIFG` and fires the **`TIMER0_A1`** vector. The application must define
     /// that ISR (msp430-rt `#[interrupt] fn TIMER0_A1`), clear the flag from it
     /// with [`clear_overflow_irq`], tally the rollover in a shared counter, and
-    /// enable interrupts globally (set GIE). See [`now64`](Counter::now64).
+    /// enable interrupts globally (set GIE). See [`now32`](Counter::now32).
     pub fn enable_overflow_interrupt(&self) {
         self.timer.ta0ctl().modify(|_, w| w.taie().set_bit());
     }
@@ -245,14 +257,14 @@ impl Counter {
     /// matches the incremented high half. (The ISR will also count this same
     /// overflow once the CS ends; that is fine — it only updates the software
     /// tally for *next* time, it does not double-count this reading.)
-    pub fn now64(&self, overflows: u16) -> u32 {
+    pub fn now32(&self, overflows: u16) -> u32 {
         let mut ovf = overflows;
         let mut cnt = self.now();
         if self.overflow_pending() {
             ovf = ovf.wrapping_add(1);
             cnt = self.now();
         }
-        crate::ticks::assemble_now64(ovf, cnt)
+        crate::ticks::assemble_now32(ovf, cnt)
     }
 
     /// Configure capture/compare channel **CCR1** for software-triggered
@@ -282,7 +294,7 @@ impl Counter {
     /// latches), then returns it to GND to re-arm for next time. The two field
     /// writes also give the synchronous capture (`SCS`) a clock edge to complete
     /// before [`capture_value`](Counter::capture_value) reads `TAxCCR1`. Requires
-    /// [`configure_capture`] first.
+    /// [`configure_capture`](Counter::configure_capture) first.
     pub fn software_capture(&self) -> u16 {
         self.timer.ta0cctl1().modify(|_, w| w.ccis().ccis_3()); // → VCC: rising edge → capture
         self.timer.ta0cctl1().modify(|_, w| w.ccis().ccis_2()); // → GND: re-arm (falling, ignored)
@@ -306,21 +318,26 @@ impl Counter {
         self.timer.ta0cctl1().modify(|_, w| w.cov().clear_bit());
     }
 
-    /// Schedule a one-shot wake-up when the counter next reaches `at_tick`,
-    /// using **CCR0 in compare mode**.
+    /// Schedule a one-shot wake-up `interval` ticks from now, using **CCR0 in
+    /// compare mode**.
     ///
     /// Where [`configure_capture`](Counter::configure_capture) records the
     /// counter on an input edge, *compare* mode does the opposite: it fires when
     /// the free-running counter equals `TAxCCR0`. With the counter on ACLK
     /// (see [`new_aclk`](Counter::new_aclk)) and the part in LPM3, that match
     /// fires the **`TIMER0_A0`** interrupt and — if its handler is
-    /// `#[interrupt(wake_cpu)]` — wakes the CPU from deep sleep. Pick `at_tick`
-    /// as `now().wrapping_add(interval_ticks)`; the compare is on the 16-bit
-    /// counter, so the interval must be < 65536 ticks (~2 s at 32.768 kHz).
+    /// `#[interrupt(wake_cpu)]` — wakes the CPU from deep sleep.
+    ///
+    /// The target tick is computed internally as `now().wrapping_add(interval)`,
+    /// so the caller never hand-rolls the wrap arithmetic. Because `interval` is
+    /// a `u16` it is structurally less than one full counter period (65536
+    /// ticks, ~2 s at 32.768 kHz); size it from a real duration with
+    /// [`ticks_in_us`](Counter::ticks_in_us), which range-checks the conversion.
     ///
     /// The handler should call [`clear_wake_irq`] to disarm the one-shot (the
     /// counter is free-running, so the match would otherwise recur every wrap).
-    pub fn schedule_wake(&self, at_tick: u16) {
+    pub fn schedule_wake_in(&self, interval: u16) {
+        let at_tick = self.now().wrapping_add(interval);
         // SAFETY: `bits` on a full-width value register is an unsafe writer.
         unsafe { self.timer.ta0ccr0().write(|w| w.bits(at_tick)) };
         // Compare mode (CAP=0, the reset value) with the CCR0 interrupt enabled;
@@ -344,31 +361,27 @@ impl Counter {
 ///
 /// The dedicated `TIMER0_A0` vector auto-clears CCR0's `CCIFG` on service, so
 /// the handler only needs to clear `CCIE` to stop the one-shot from re-firing on
-/// the next wrap. Provided as a free function (raw `TA0CCTL0` access) because the
-/// ISR does not own the [`Counter`], mirroring [`clear_overflow_irq`].
+/// the next wrap. Provided as a free function because the ISR does not own the
+/// [`Counter`], mirroring [`clear_overflow_irq`].
 pub fn clear_wake_irq() {
-    // TA0CCTL0 = Timer0_A3 base (0x0340) + 0x02; CCIE is bit 4.
-    const TA0CCTL0: usize = 0x0342;
-    const CCIE: u16 = 0x0010;
-    unsafe {
-        let p = TA0CCTL0 as *mut u16;
-        p.write_volatile(p.read_volatile() & !CCIE);
-    }
+    // SAFETY: fabricates a second Timer0_A3 handle to clear one flag the
+    // Counter-owning code never writes. `steal` changes the access *mechanism*
+    // (typed field vs. raw address), not the concurrency: this is the same
+    // disjoint-register access as before.
+    let timer = unsafe { pac::Timer0A3::steal() };
+    timer.ta0cctl0().modify(|_, w| w.ccie().clear_bit());
 }
 
 /// Clear a pending Timer0_A3 overflow interrupt (`TAIFG`).
 ///
 /// Intended to be called from the `TIMER0_A1` ISR, which does not own the
-/// [`Counter`]; it therefore reaches `TA0CTL` by raw address (consistent with
-/// the rest of this HAL) and clears only `TAIFG`, leaving the source/divider/
-/// mode/enable bits intact. The read-modify-write cannot race the hardware
-/// re-setting `TAIFG` — the next overflow is a full counter period away.
+/// [`Counter`]; it clears only `TAIFG`, leaving the source/divider/mode/enable
+/// bits intact. The read-modify-write cannot race the hardware re-setting
+/// `TAIFG` — the next overflow is a full counter period away.
 pub fn clear_overflow_irq() {
-    // TA0CTL = Timer0_A3 base (0x0340); TAIFG is bit 0.
-    const TA0CTL: usize = 0x0340;
-    const TAIFG: u16 = 0x0001;
-    unsafe {
-        let p = TA0CTL as *mut u16;
-        p.write_volatile(p.read_volatile() & !TAIFG);
-    }
+    // SAFETY: a stolen Timer0_A3 handle touching only TAIFG via read-modify-
+    // write — disjoint from the bits the Counter writes, and the next overflow
+    // is a full period away, so it cannot race the hardware re-setting the flag.
+    let timer = unsafe { pac::Timer0A3::steal() };
+    timer.ta0ctl().modify(|_, w| w.taifg().clear_bit());
 }

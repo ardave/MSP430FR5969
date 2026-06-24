@@ -61,14 +61,14 @@ Goal: measure intervals longer than one 16-bit period by assembling a wider
       (`OVERFLOWS` in the consumer); ISR gets its `CriticalSection` from the
       macro, `main` via `critical_section::with`. Added `critical-section = "1"`
       to the consumer.
-- [x] `Counter::now64(overflows)`: assembles `(ovf << 16) | TA0R`. Read race
+- [x] `Counter::now32(overflows)`: assembles `(ovf << 16) | TA0R`. Read race
       handled by calling it inside a CS and folding in a *pending-but-uncounted*
       overflow — if `TAIFG` is set, add one and re-read `TA0R` so the low half
       matches the bumped high half. `clear_overflow_irq()` (raw `TA0CTL` write)
       lets the ISR clear the flag without owning the `Counter`.
 - [x] Widened `ticks_to_us`/`ticks_to_ns` to take `u32` ticks.
 - [x] Demo: times a full ~1 s interval. **Result:** 16-bit-only delta reads
-      22206 ticks (= 1005246 mod 65536, the step-1 failure), 32-bit `now64`
+      22206 ticks (= 1005246 mod 65536, the step-1 failure), 32-bit `now32`
       reads 1005246 ticks = 1005246 µs. The ~5.2 ms over 1000 ms = ~2.5 ms
       `Delay` math overhead + ~15 overflow-ISR services inside the window
       (the counter rightly counts them). Stable across every reading.
@@ -108,7 +108,7 @@ Goal: keep timing while the part is in LPM3. **Hardware-verified (2026-06-21).**
       `clocks::configure_low_power` that is the 32.768 kHz LFXT crystal (~30.5 µs
       tick, ~2 s wrap), which keeps running in LPM3 — unlike the SMCLK source.
 - [x] Wake mechanism = **CCR0 compare** (the dual of step 3's capture):
-      `Counter::schedule_wake(at_tick)` writes `TA0CCR0` and enables `CCIE`; the
+      `Counter::schedule_wake_in(interval)` writes `TA0CCR0` and enables `CCIE`; the
       match fires the dedicated **`TIMER0_A0`** vector. ISR is
       `#[msp430_rt::interrupt(wake_cpu)]` — `objdump` shows it opens with
       `bic.b #0xF0, 0(r1)`, clearing CPUOFF|OSCOFF|SCG0|SCG1 on the *stacked* SR
@@ -119,7 +119,7 @@ Goal: keep timing while the part is in LPM3. **Hardware-verified (2026-06-21).**
       0 so the crystal lives. Consumer needed BOTH `#![feature(
       abi_msp430_interrupt)]` and `#![feature(asm_experimental_arch)]` (the
       `wake_cpu` variant emits a naked-asm trampoline).
-- [x] now64 + the step-2 overflow ISR keep tallying *during* sleep: an ACLK
+- [x] now32 + the step-2 overflow ISR keep tallying *during* sleep: an ACLK
       overflow briefly wakes the CPU to run the plain `TIMER0_A1` handler, which
       RETIs back to LPM3. So sleeps longer than one ~2 s wrap still measure right.
 - [x] Demo: sleep ~1 s in LPM3, measure on wake. **Result (stable):** `slept in
@@ -132,12 +132,13 @@ Goal: keep timing while the part is in LPM3. **Hardware-verified (2026-06-21).**
 
 - [x] **Host-side unit test for the tick↔time math** (done 2026-06-21). The pure
       arithmetic was extracted from `Counter`'s methods into a dependency-free
-      `hal/src/ticks.rs` (`ticks_to_us`, `ticks_to_ns`, `assemble_now64`),
-      mirroring `baud.rs`. New detached crate `timer-test/` `include!`s that
-      source and checks it on the host (`cd timer-test && cargo +nightly test` —
-      7 tests). Covers exact conversions at the project's real rates (8 MHz,
-      1 MHz, 32768 Hz, VLO), the `u64`-widening overflow guard, truncation, the
-      `now64` bit-packing, and reproduces the exact Step 4 hardware readings
+      `hal/src/ticks.rs` (`ticks_to_us`, `ticks_to_ns`, `us_to_ticks`,
+      `assemble_now32`), mirroring `baud.rs`. New detached crate `timer-test/`
+      `include!`s that source and checks it on the host (`cd timer-test && cargo
+      +nightly test` — 10 tests). Covers exact conversions at the project's real
+      rates (8 MHz, 1 MHz, 32768 Hz, VLO), the `u64`-widening overflow guard,
+      truncation, the `us_to_ticks` one-wrap range check, the `now32`
+      bit-packing, and reproduces the exact Step 4 hardware readings
       (32771→1000091, 32772→1000122 µs). Verified it fails on a wrong-but-
       compiling edit, so it genuinely guards the shipping source.
 - [ ] Consider an `embedded-hal` trait impl if one fits
