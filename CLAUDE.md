@@ -39,6 +39,16 @@ Most firmware can only be validated on hardware, but pure logic is tested on the
 
 Run with `cd <crate> && cargo +nightly test`. The host triple in each `.cargo/config.toml` is `aarch64-apple-darwin`; change it for other hosts.
 
+## Hardware test setups (consumer demos)
+
+The `hal_consumer` demos that exercise eUSCI_B0 each need specific board wiring. **eUSCI_B0 is *either* SPI or I2C** (one register block at 0x0640, shared P1.6/P1.7 pins), so the SPI and I2C demos are **separate binaries** — only one can be flashed at a time. Observe all of them over the UART backchannel: eUSCI_A0 on `/dev/cu.usbmodem11203` @ **9600 8N1** (e.g. `screen /dev/cu.usbmodem11203 9600`; the eZ-FET gates TX on DTR, which `screen` asserts).
+
+- **SPI loopback (`--bin hal_consumer`, `src/main.rs`):** install a **jumper wire from P1.6 (SIMO) to P1.7 (SOMI)**. The demo `transfer_in_place`s a 6-byte pattern; with the jumper every byte round-trips → solid **GREEN** LED + UART `PASS`. Without it SOMI floats → solid **RED** + `FAIL` (the transfer still completes, proving it doesn't hang). This is the self-contained SPI test — no external device needed.
+
+- **I2C bus scan (`--bin i2c_scan`, `src/bin/i2c_scan.rs`):** P1.6 = **SDA**, P1.7 = **SCL**. **Remove the SPI loopback jumper first** — on P1.6/P1.7 it shorts SDA directly to SCL and no I2C transfer can work. I2C is open-drain, so add **~4.7 kΩ pull-ups** from SDA and SCL to 3V3 (many breakout boards include their own; a BME280 board typically does). The scanner probes 0x08..=0x77 with zero-length writes and reports ACKing addresses; GREEN if any device answers, RED if the bus is empty. **Without pull-ups SCL can't be released high and the (current) driver will spin forever** — no output and no LED change means suspect pull-ups/wiring before code.
+
+- **BME280 I2C validation:** wire VCC→3V3, GND→GND, SDA→P1.6, SCL→P1.7 (jumper removed, pull-ups present). The BME280 answers at **0x76** (SDO low) or **0x77** (SDO high) — the scanner catches either. Beyond the address probe, the chip-ID register is the natural `write_read` correctness check: `i2c.write_read(addr, &[0xD0], &mut id)` should return **0x60** (BME280's fixed ID), exercising the write→repeated-START→read path that the scanner alone does not.
+
 ## Architecture
 
 **Workspace layout:**
