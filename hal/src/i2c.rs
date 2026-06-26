@@ -51,6 +51,7 @@ use crate::pac;
 const BASE: usize = 0x0640;
 
 const CTLW0: usize = 0x00; // Control word 0 (reset, mode, START/STOP/dir, clock)
+const CTLW1: usize = 0x02; // Control word 1 (clock-low timeout, auto-stop, ...)
 const BRW: usize = 0x06; // Bit-rate prescaler (SCL = BRCLK / UCBRW)
 const RXBUF: usize = 0x0C; // Receive buffer
 const TXBUF: usize = 0x0E; // Transmit buffer
@@ -68,10 +69,20 @@ const UCSYNC: u16 = 1 << 8; // 1 = synchronous mode; must be set for I2C
 const UCMODE_I2C: u16 = 0b11 << 9; // UCMODEx = 11 selects I2C
 const UCMST: u16 = 1 << 11; // 1 = master mode
 
+// CTLW1 bit fields.
+const UCCLTO_28MS: u16 = 0b01 << 6; // Clock-low timeout ~28 ms (UCCLTOx = 01)
+
 // IFG bit fields (low byte of the flags word).
 const UCRXIFG: u16 = 1 << 0; // Receive buffer full (a byte arrived)
 const UCTXIFG: u16 = 1 << 1; // Transmit buffer empty (ready for next byte)
 const UCNACKIFG: u16 = 1 << 5; // NACK received (no/!ACK from the addressed slave)
+const UCCLTOIFG: u16 = 1 << 7; // Clock-low timeout elapsed (SCL held low too long)
+
+// Software backstop on every wait loop, in iterations. The hardware clock-low
+// timeout (UCCLTO, ~28 ms) is the primary anti-hang mechanism; this only
+// guarantees termination for a stall that never pulls SCL low. Sized far above
+// any legitimate per-byte wait (even with slave clock-stretching) yet finite.
+const TIMEOUT_BUDGET: u32 = 200_000;
 
 // ---------------------------------------------------------------------------
 // Pin mux: SDA = P1.6, SCL = P1.7, both at SEL1:SEL0 = 10.
@@ -131,6 +142,11 @@ pub enum Error {
     /// The addressed device acknowledged its address but then NACKed a data
     /// byte (e.g. it has no room, or rejected the command).
     DataNack,
+    /// A bus operation did not complete in time and the driver aborted it. The
+    /// usual cause is SCL held low — no pull-ups, or a slave wedged mid-byte —
+    /// caught by the eUSCI clock-low timeout (`UCCLTO`); the bus is reset and
+    /// released before this is returned, so the next transaction starts clean.
+    Timeout,
 }
 
 impl embedded_hal::i2c::Error for Error {
@@ -139,6 +155,7 @@ impl embedded_hal::i2c::Error for Error {
         match self {
             Error::AddressNack => ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address),
             Error::DataNack => ErrorKind::NoAcknowledge(NoAcknowledgeSource::Data),
+            Error::Timeout => ErrorKind::Bus,
         }
     }
 }
@@ -204,6 +221,10 @@ impl I2c {
         unsafe {
             // 1. Hold in reset while programming.
             write_reg(BASE + CTLW0, ctlw0);
+            // 1b. Enable the clock-low timeout so a stuck SCL (no pull-ups, or a
+            //     wedged slave) sets UCCLTOIFG instead of hanging the master
+            //     forever. Polled as an escape condition in every wait loop.
+            write_reg(BASE + CTLW1, UCCLTO_28MS);
             // 2. Bit-rate prescaler (SCL = BRCLK / UCBRW).
             write_reg(BASE + BRW, config.prescaler());
             // 3. Mux SDA/SCL to the eUSCI_B0 function (SEL1:SEL0 = 10).
@@ -225,13 +246,76 @@ impl I2c {
         self.write(address, &[]).is_ok()
     }
 
-    /// Emit a STOP and block until the bus is released. Used on both the success
-    /// and error paths so the bus is never left held.
+    /// Spin until `poll` resolves, the eUSCI clock-low timeout (`UCCLTO`) trips,
+    /// or the software iteration budget runs out — guaranteeing no wait in this
+    /// driver can hang forever. The latter two recover the bus and return
+    /// [`Error::Timeout`].
+    ///
+    /// `poll` returns `None` to keep waiting or `Some(result)` to finish; the
+    /// `Some(Err(_))` arm lets a caller also bail on a NACK, not just success.
+    /// It captures nothing (it only reads fixed registers), so it coerces to a
+    /// plain `fn` pointer — one non-generic `wait`, no per-call-site code bloat.
+    fn wait(&self, poll: fn() -> Option<Result<(), Error>>) -> Result<(), Error> {
+        let mut budget = TIMEOUT_BUDGET;
+        loop {
+            if let Some(r) = poll() {
+                return r;
+            }
+            let clock_low_timeout = unsafe { read_reg(BASE + IFG) } & UCCLTOIFG != 0;
+            budget -= 1;
+            if clock_low_timeout || budget == 0 {
+                self.recover();
+                return Err(Error::Timeout);
+            }
+        }
+    }
+
+    /// Reset the I2C state machine and release SDA/SCL after a timeout. Toggling
+    /// `UCSWRST` resets the state machine and pending flags but leaves the mode,
+    /// clock, bit-rate, and `UCCLTO` configuration intact, so the next
+    /// transaction works without a full re-init.
+    fn recover(&self) {
+        unsafe {
+            set_bits_u16(BASE + CTLW0, UCSWRST);
+            clear_bits_u16(BASE + IFG, UCCLTOIFG | UCNACKIFG);
+            clear_bits_u16(BASE + CTLW0, UCSWRST);
+        }
+    }
+
+    /// Emit a STOP and wait (bounded) until the bus is released. Used on both the
+    /// success and error paths so the bus is never left held; a wedged bus is
+    /// freed by [`wait`](Self::wait)'s recovery rather than hanging here.
     fn stop(&self) {
         unsafe {
             set_bits_u16(BASE + CTLW0, UCTXSTP);
-            while read_reg(BASE + CTLW0) & UCTXSTP != 0 {}
         }
+        let _ = self.wait(|| {
+            if unsafe { read_reg(BASE + CTLW0) } & UCTXSTP == 0 {
+                Some(Ok(()))
+            } else {
+                None
+            }
+        });
+    }
+
+    /// Wait until TXBUF can accept the next byte, turning a NACK into a STOP +
+    /// [`Error::DataNack`] and a timeout into an (already-recovered)
+    /// [`Error::Timeout`].
+    fn wait_tx_ready(&self) -> Result<(), Error> {
+        let r = self.wait(|| {
+            let ifg = unsafe { read_reg(BASE + IFG) };
+            if ifg & UCNACKIFG != 0 {
+                Some(Err(Error::DataNack))
+            } else if ifg & UCTXIFG != 0 {
+                Some(Ok(()))
+            } else {
+                None
+            }
+        });
+        if let Err(Error::DataNack) = r {
+            self.stop();
+        }
+        r
     }
 
     /// Drive one same-direction *write* run: (repeated) START + address, then
@@ -243,54 +327,42 @@ impl I2c {
         ops: &[embedded_hal::i2c::Operation<'_>],
         send_stop: bool,
     ) -> Result<(), Error> {
+        // Transmitter + START. Clearing UCNACKIFG/UCCLTOIFG first so we read a
+        // fresh address-ACK result (and no stale timeout) below.
         unsafe {
-            // Transmitter + START. Clearing UCNACKIFG first so we read a fresh
-            // address-ACK result below.
-            clear_bits_u16(BASE + IFG, UCNACKIFG);
+            clear_bits_u16(BASE + IFG, UCNACKIFG | UCCLTOIFG);
             set_bits_u16(BASE + CTLW0, UCTR | UCTXSTT);
-            // UCTXSTT self-clears once the address byte (and its ACK/NACK) is done.
-            while read_reg(BASE + CTLW0) & UCTXSTT != 0 {}
-            if read_reg(BASE + IFG) & UCNACKIFG != 0 {
-                self.stop();
-                return Err(Error::AddressNack);
+        }
+        // UCTXSTT self-clears once the address byte (and its ACK/NACK) is done.
+        self.wait(|| {
+            if unsafe { read_reg(BASE + CTLW0) } & UCTXSTT == 0 {
+                Some(Ok(()))
+            } else {
+                None
             }
+        })?;
+        if unsafe { read_reg(BASE + IFG) } & UCNACKIFG != 0 {
+            self.stop();
+            return Err(Error::AddressNack);
+        }
 
-            for op in ops {
-                if let embedded_hal::i2c::Operation::Write(bytes) = op {
-                    for &b in *bytes {
-                        // Wait until TXBUF can take the next byte, bailing if the
-                        // slave NACKed the previous one.
-                        loop {
-                            let ifg = read_reg(BASE + IFG);
-                            if ifg & UCNACKIFG != 0 {
-                                self.stop();
-                                return Err(Error::DataNack);
-                            }
-                            if ifg & UCTXIFG != 0 {
-                                break;
-                            }
-                        }
-                        write_reg(BASE + TXBUF, b as u16);
-                    }
+        for op in ops {
+            if let embedded_hal::i2c::Operation::Write(bytes) = op {
+                for &b in *bytes {
+                    // Wait until TXBUF can take the next byte (or bail on NACK /
+                    // timeout, both already cleaning up the bus).
+                    self.wait_tx_ready()?;
+                    unsafe { write_reg(BASE + TXBUF, b as u16) };
                 }
             }
+        }
 
-            // Wait for the final byte to leave TXBUF before we (optionally) STOP,
-            // so STOP follows a fully transmitted byte rather than truncating it.
-            loop {
-                let ifg = read_reg(BASE + IFG);
-                if ifg & UCNACKIFG != 0 {
-                    self.stop();
-                    return Err(Error::DataNack);
-                }
-                if ifg & UCTXIFG != 0 {
-                    break;
-                }
-            }
+        // Wait for the final byte to leave TXBUF before we (optionally) STOP, so
+        // STOP follows a fully transmitted byte rather than truncating it.
+        self.wait_tx_ready()?;
 
-            if send_stop {
-                self.stop();
-            }
+        if send_stop {
+            self.stop();
         }
         Ok(())
     }
@@ -312,50 +384,68 @@ impl I2c {
             })
             .sum();
 
+        // Receiver + START.
         unsafe {
-            // Receiver + START.
-            clear_bits_u16(BASE + IFG, UCNACKIFG);
+            clear_bits_u16(BASE + IFG, UCNACKIFG | UCCLTOIFG);
             clear_bits_u16(BASE + CTLW0, UCTR);
             set_bits_u16(BASE + CTLW0, UCTXSTT);
-            while read_reg(BASE + CTLW0) & UCTXSTT != 0 {}
-            if read_reg(BASE + IFG) & UCNACKIFG != 0 {
-                self.stop();
-                return Err(Error::AddressNack);
+        }
+        self.wait(|| {
+            if unsafe { read_reg(BASE + CTLW0) } & UCTXSTT == 0 {
+                Some(Ok(()))
+            } else {
+                None
             }
+        })?;
+        if unsafe { read_reg(BASE + IFG) } & UCNACKIFG != 0 {
+            self.stop();
+            return Err(Error::AddressNack);
+        }
 
-            // A single-byte read must request STOP *now* (right after the address
-            // phase, before the one and only byte finishes), so the master NACKs
-            // it. For multi-byte reads, STOP is requested just before the last
-            // byte instead (handled in the loop below).
-            if send_stop && total == 1 {
-                set_bits_u16(BASE + CTLW0, UCTXSTP);
-            }
+        // A single-byte read must request STOP *now* (right after the address
+        // phase, before the one and only byte finishes), so the master NACKs it.
+        // For multi-byte reads, STOP is requested just before the last byte
+        // instead (handled in the loop below).
+        if send_stop && total == 1 {
+            unsafe { set_bits_u16(BASE + CTLW0, UCTXSTP) };
+        }
 
-            let mut idx = 0usize;
-            for op in ops {
-                if let embedded_hal::i2c::Operation::Read(buf) = op {
-                    for slot in buf.iter_mut() {
-                        // Request STOP before clocking in the final byte so it is
-                        // NACKed (telling the slave to stop driving SDA).
-                        if send_stop && total > 1 && idx == total - 1 {
-                            set_bits_u16(BASE + CTLW0, UCTXSTP);
-                        }
-                        while read_reg(BASE + IFG) & UCRXIFG == 0 {}
-                        *slot = read_reg(BASE + RXBUF) as u8;
-                        idx += 1;
+        let mut idx = 0usize;
+        for op in ops {
+            if let embedded_hal::i2c::Operation::Read(buf) = op {
+                for slot in buf.iter_mut() {
+                    // Request STOP before clocking in the final byte so it is
+                    // NACKed (telling the slave to stop driving SDA).
+                    if send_stop && total > 1 && idx == total - 1 {
+                        unsafe { set_bits_u16(BASE + CTLW0, UCTXSTP) };
                     }
+                    self.wait(|| {
+                        if unsafe { read_reg(BASE + IFG) } & UCRXIFG != 0 {
+                            Some(Ok(()))
+                        } else {
+                            None
+                        }
+                    })?;
+                    *slot = unsafe { read_reg(BASE + RXBUF) } as u8;
+                    idx += 1;
                 }
             }
+        }
 
-            if send_stop {
-                // total == 0 (zero-length read probe): no byte was clocked, so
-                // STOP still needs issuing here. Otherwise this just waits for the
-                // STOP requested above to complete.
-                if total == 0 {
-                    set_bits_u16(BASE + CTLW0, UCTXSTP);
-                }
-                while read_reg(BASE + CTLW0) & UCTXSTP != 0 {}
+        if send_stop {
+            // total == 0 (zero-length read probe): no byte was clocked, so STOP
+            // still needs issuing here. Otherwise this just waits for the STOP
+            // requested above to complete.
+            if total == 0 {
+                unsafe { set_bits_u16(BASE + CTLW0, UCTXSTP) };
             }
+            self.wait(|| {
+                if unsafe { read_reg(BASE + CTLW0) } & UCTXSTP == 0 {
+                    Some(Ok(()))
+                } else {
+                    None
+                }
+            })?;
         }
         Ok(())
     }
@@ -401,13 +491,17 @@ impl embedded_hal::i2c::I2c<embedded_hal::i2c::SevenBitAddress> for I2c {
             return Ok(());
         }
 
-        unsafe {
-            // The 7-bit address, right-justified, is constant for the whole
-            // transaction (repeated STARTs re-send this same address).
-            write_reg(BASE + I2CSA, address as u16);
-            // Make sure any prior STOP has finished and the bus is idle.
-            while read_reg(BASE + CTLW0) & UCTXSTP != 0 {}
-        }
+        // The 7-bit address, right-justified, is constant for the whole
+        // transaction (repeated STARTs re-send this same address).
+        unsafe { write_reg(BASE + I2CSA, address as u16) };
+        // Make sure any prior STOP has finished and the bus is idle.
+        self.wait(|| {
+            if unsafe { read_reg(BASE + CTLW0) } & UCTXSTP == 0 {
+                Some(Ok(()))
+            } else {
+                None
+            }
+        })?;
 
         let n = operations.len();
         let mut i = 0;
