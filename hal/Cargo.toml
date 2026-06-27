@@ -15,3 +15,6 @@ embedded-hal = "1.0"
 embedded-hal-nb = "1.0"
 # Blocking, byte-stream I/O traits (Read / Write / ReadReady / WriteReady).
 embedded-io = "0.6"
+# Byte-addressable non-volatile storage traits (ReadStorage / Storage). The
+# embedded-hal ecosystem's abstraction for EEPROM/FRAM/flash; used by `fram`.
+embedded-storage = "0.3"

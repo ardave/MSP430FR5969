@@ -6,6 +6,8 @@
 mod baud;
 pub mod clocks;
 pub mod delay;
+pub mod fram;
+mod fram_addr;
 pub mod gpio;
 pub mod i2c;
 pub mod power;
@@ -17,6 +19,7 @@ pub mod timer;
 pub use embedded_hal;
 pub use embedded_hal_nb;
 pub use embedded_io;
+pub use embedded_storage;
 pub use pac;
 
 /// Interrupt vector names for use with msp430-rt's `#[interrupt]` attribute.
