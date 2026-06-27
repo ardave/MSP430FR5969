@@ -12,6 +12,8 @@ mod fram_addr;
 pub mod gpio;
 pub mod i2c;
 pub mod power;
+pub mod pwm;
+pub mod rtc;
 pub mod serial;
 pub mod spi;
 mod ticks;
