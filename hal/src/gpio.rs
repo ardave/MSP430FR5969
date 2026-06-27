@@ -15,6 +15,13 @@ pub struct Input<PULL = Floating> {
 /// Push-pull output mode.
 pub struct Output;
 
+/// Analog mode: the pin is handed to an on-chip analog peripheral (e.g. an
+/// ADC12_B input channel) rather than the digital I/O logic. Selecting it
+/// (`SEL1 = SEL0 = 1`, the "ternary module function") disconnects the digital
+/// input buffer so it neither loads the analog signal nor draws crowbar current
+/// at mid-rail. See [`crate::adc`] for the pin↔channel mapping.
+pub struct Analog;
+
 /// No pull resistor (floating input).
 pub struct Floating;
 
@@ -141,6 +148,14 @@ unsafe fn select_gpio<PORT: PortRegs>(bit: u8) {
     clear_bit(PORT::SEL1, bit);
 }
 
+/// Set SEL0 and SEL1 (`SELx = 11`) to hand the pin to the analog/ternary module
+/// function — for our purposes, an ADC12_B input.
+#[inline(always)]
+unsafe fn select_analog<PORT: PortRegs>(bit: u8) {
+    set_bit(PORT::SEL0, bit);
+    set_bit(PORT::SEL1, bit);
+}
+
 // ---------------------------------------------------------------------------
 // Mode transitions
 // ---------------------------------------------------------------------------
@@ -192,6 +207,23 @@ impl<PORT: PortRegs, const N: u8, MODE> Pin<PORT, N, MODE> {
             set_bit(PORT::DIR, N);
             clear_bit(PORT::REN, N);
             select_gpio::<PORT>(N);
+        }
+        Pin::new()
+    }
+
+    /// Configure as an analog input for an on-chip peripheral (ADC12_B).
+    ///
+    /// Selects the ternary module function (`SELx = 11`), which detaches the
+    /// digital input buffer. The pin direction is left as input with no pull
+    /// resistor so it presents a high impedance to the analog source. The
+    /// resulting [`Pin<_, _, Analog>`] is what [`crate::adc::Adc::read`] accepts;
+    /// only pins that are actually wired to an ADC channel implement
+    /// [`crate::adc::AdcPin`], so a non-analog pin is rejected at compile time.
+    pub fn into_analog(self) -> Pin<PORT, N, Analog> {
+        unsafe {
+            clear_bit(PORT::DIR, N);
+            clear_bit(PORT::REN, N);
+            select_analog::<PORT>(N);
         }
         Pin::new()
     }
