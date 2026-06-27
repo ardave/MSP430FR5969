@@ -22,6 +22,14 @@ pub struct Output;
 /// at mid-rail. See [`crate::adc`] for the pin↔channel mapping.
 pub struct Analog;
 
+/// Timer_B0 output mode: the pin is driven by a Timer0_B7 capture/compare
+/// output (`TB0.n`) rather than the GPIO latch. Selecting it (`SEL1 = 0,
+/// SEL0 = 1`, the **secondary** module function — datasheet SLAS704 Table 6-x)
+/// hands the pad to the timer so a PWM waveform appears on it. The direction is
+/// also set to output, as the datasheet pin table requires for `TB0.n`. See
+/// [`crate::pwm`] for the pin↔channel mapping.
+pub struct TimerB;
+
 /// No pull resistor (floating input).
 pub struct Floating;
 
@@ -156,6 +164,14 @@ unsafe fn select_analog<PORT: PortRegs>(bit: u8) {
     set_bit(PORT::SEL1, bit);
 }
 
+/// Select the **secondary** module function (`SEL0 = 1, SEL1 = 0`) — for our
+/// purposes, a Timer_B0 output (`TB0.n`) on its pin.
+#[inline(always)]
+unsafe fn select_secondary<PORT: PortRegs>(bit: u8) {
+    set_bit(PORT::SEL0, bit);
+    clear_bit(PORT::SEL1, bit);
+}
+
 // ---------------------------------------------------------------------------
 // Mode transitions
 // ---------------------------------------------------------------------------
@@ -224,6 +240,25 @@ impl<PORT: PortRegs, const N: u8, MODE> Pin<PORT, N, MODE> {
             clear_bit(PORT::DIR, N);
             clear_bit(PORT::REN, N);
             select_analog::<PORT>(N);
+        }
+        Pin::new()
+    }
+
+    /// Configure as a **Timer_B0 output** (`TB0.n`) for PWM.
+    ///
+    /// Selects the secondary module function (`SEL0 = 1, SEL1 = 0`) so the
+    /// Timer0_B7 compare logic — not the GPIO latch — drives the pad, and sets
+    /// the direction to output as the datasheet pin table requires for the
+    /// `TB0.n` function. The resulting [`Pin<_, _, TimerB>`] is what
+    /// [`crate::pwm::Pwm::channel`] accepts; only pins actually wired to a
+    /// Timer_B0 channel implement [`crate::pwm::PwmPin`], so routing a pin with
+    /// no `TB0.n` function is a compile error. Which channel a pin feeds is fixed
+    /// by silicon — see the table in [`crate::pwm`].
+    pub fn into_timer_b_output(self) -> Pin<PORT, N, TimerB> {
+        unsafe {
+            set_bit(PORT::DIR, N); // output: the timer drives the pad
+            clear_bit(PORT::REN, N);
+            select_secondary::<PORT>(N);
         }
         Pin::new()
     }
