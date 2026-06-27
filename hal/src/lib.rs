@@ -3,6 +3,7 @@
 // `delay` for its cycle-accurate busy-loop).
 #![feature(asm_experimental_arch)]
 
+pub mod adc;
 mod baud;
 pub mod clocks;
 pub mod delay;
