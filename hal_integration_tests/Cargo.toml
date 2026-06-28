@@ -16,3 +16,6 @@ publish = false
 [workspace]
 
 [dependencies]
+# Host-side serial port access for talking to the board's eUSCI_A0 UART
+# backchannel over the eZ-FET USB CDC port.
+serialport = "4"
