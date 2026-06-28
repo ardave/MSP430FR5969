@@ -1,0 +1,18 @@
+# Host-side runner for the on-board HAL integration (hardware-in-the-loop) tests.
+#
+# Detached from the main workspace (note the empty [workspace] table) and given
+# its own .cargo/config.toml so it builds and runs on the host (aarch64 macOS)
+# instead of inheriting the repo's msp430-none-elf / build-std=["core"] target.
+# This crate runs on the development workstation and talks to the flashed board
+# over UART — it is NOT cross-compiled to the MSP430.
+#
+# Run with:  cd hal_integration_tests && cargo test   (or `cargo run`)
+[package]
+name = "hal_integration_tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
