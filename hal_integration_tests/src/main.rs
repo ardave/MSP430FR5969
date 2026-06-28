@@ -1,5 +1,8 @@
 use std::error::Error;
 
+mod deployment;
+mod serial;
+
 mod serial_port_tests;
 mod timer_tests;
 mod deep_sleep_tests;
