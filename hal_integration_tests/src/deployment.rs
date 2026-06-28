@@ -8,7 +8,8 @@
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+use xshell::{cmd, Shell};
 
 /// Absolute path to the eZ-FET emulator's flashing tool.
 const DSLITE: &str = "/Applications/ti/ccs2051/ccs/ccs_base/DebugServer/bin/DSLite";
@@ -31,21 +32,18 @@ pub fn build_and_flash(bin: &str) -> Result<(), Box<dyn Error>> {
 /// Cross-compile the named `hal_consumer` binary for `msp430-none-elf`.
 pub fn build(bin: &str) -> Result<(), Box<dyn Error>> {
     println!("  building {bin} (msp430-none-elf)...");
-    let status = Command::new("cargo")
-        .args(["+nightly", "build", "--bin", bin])
-        .current_dir(repo_root())
-        // This runner is itself launched by cargo, which exports env that would
-        // otherwise leak into the child build: RUSTUP_TOOLCHAIN would override
-        // our `+nightly`, and the target/target-dir vars would point the build
-        // at the host triple / wrong output dir instead of the repo's msp430
-        // config. Strip them so the child build uses the repo-root .cargo config.
+    let sh = Shell::new()?;
+    sh.change_dir(repo_root());
+    // This runner is itself launched by cargo, which exports env that would
+    // otherwise leak into the child build: RUSTUP_TOOLCHAIN would override our
+    // `+nightly`, and the target/target-dir vars would point the build at the
+    // host triple / wrong output dir instead of the repo's msp430 config. Strip
+    // them so the child build uses the repo-root .cargo config.
+    cmd!(sh, "cargo +nightly build --bin {bin}")
         .env_remove("RUSTUP_TOOLCHAIN")
         .env_remove("CARGO_BUILD_TARGET")
         .env_remove("CARGO_TARGET_DIR")
-        .status()?;
-    if !status.success() {
-        return Err(format!("cargo build of {bin} failed").into());
-    }
+        .run()?; // non-zero exit -> Err automatically
     Ok(())
 }
 
@@ -56,16 +54,8 @@ pub fn flash(bin: &str) -> Result<(), Box<dyn Error>> {
     let ccxml = root.join(CCXML);
 
     println!("  flashing {bin} to board...");
-    let status = Command::new(DSLITE)
-        .arg("load")
-        .arg("-c")
-        .arg(&ccxml)
-        .arg("-f")
-        .arg(&elf)
-        .status()?;
-    if !status.success() {
-        return Err(format!("DSLite flash of {bin} failed").into());
-    }
+    let sh = Shell::new()?;
+    cmd!(sh, "{DSLITE} load -c {ccxml} -f {elf}").run()?;
     Ok(())
 }
 

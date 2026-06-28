@@ -19,3 +19,6 @@ publish = false
 # Host-side serial port access for talking to the board's eUSCI_A0 UART
 # backchannel over the eZ-FET USB CDC port.
 serialport = "4"
+# Ergonomic shelling-out for the build/flash plumbing in deployment.rs: the
+# `cmd!` macro interpolates safely and returns Err on non-zero exit.
+xshell = "0.2"
