@@ -12,24 +12,42 @@ const DEFAULT_PORT: &str = "/dev/cu.usbmodem11203";
 pub fn run() -> Result<(), Box<dyn Error>> {
     println!("Starting Serial Port Tests...");
 
-    // Build the on-device fixture and flash it before any assertions, so the
-    // board is guaranteed to be running the firmware these tests expect.
-    deployment::build_and_flash("serial_uart")?;
-
     test_9600_8_n_1_comms()?;
+    test_115200_8_n_1_comms()?;
 
     println!("Serial Port Tests Completed Successfully");
     Ok(())
 }
 
-/// Open the board's UART at 9600 8N1 and verify it emits the fixed confirmation
-/// burst that `serial_uart.rs` transmits once per second.
+/// Flash the 9600-baud fixture and verify its confirmation burst — the baseline
+/// rate the board has been validated at.
 fn test_9600_8_n_1_comms() -> Result<(), Box<dyn Error>> {
+    deployment::build_and_flash("serial_uart")?;
+    verify_confirmation_burst(9600)
+}
+
+/// Flash the 115200-baud fixture and verify its confirmation burst. 115200 is
+/// the fastest standard rate the eZ-FET USB backchannel carries dependably; the
+/// generator hits it from the 8 MHz SMCLK with < 1% bit-timing error. (The MCU's
+/// own clean ceiling at 8 MHz is 500 kbaud — an exact /16 — but the backchannel
+/// is the practical limiter, so 115200 is the reliable high-rate test.)
+fn test_115200_8_n_1_comms() -> Result<(), Box<dyn Error>> {
+    deployment::build_and_flash_with_features("serial_uart", &["baud_115200"])?;
+    verify_confirmation_burst(115200)
+}
+
+/// Open the board's UART at `baud` (8N1) and verify it emits the fixed
+/// confirmation burst that the `serial_uart*` fixtures transmit once per second.
+///
+/// The fixtures are identical apart from their line rate and the baud they name
+/// in the `UART <baud> 8N1 OK` line, so a single verifier parameterized on
+/// `baud` covers every rate.
+fn verify_confirmation_burst(baud: u32) -> Result<(), Box<dyn Error>> {
     let port_path =
         std::env::var("MSP430_UART_PORT").unwrap_or_else(|_| DEFAULT_PORT.to_string());
 
-    println!("  opening {port_path} @ 9600 8N1...");
-    let mut port = serialport::new(&port_path, 9600)
+    println!("  opening {port_path} @ {baud} 8N1...");
+    let mut port = serialport::new(&port_path, baud)
         .data_bits(serialport::DataBits::Eight)
         .parity(serialport::Parity::None)
         .stop_bits(serialport::StopBits::One)
@@ -45,10 +63,13 @@ fn test_9600_8_n_1_comms() -> Result<(), Box<dyn Error>> {
     // Give the freshly-flashed board a moment to reset and start transmitting.
     thread::sleep(Duration::from_millis(500));
 
-    // The exact lines serial_uart.rs emits between its frame markers.
+    // The exact lines the fixture emits between its frame markers. The middle
+    // confirmation line names the active baud, so it doubles as a check that the
+    // board really came up at the rate we opened the port with.
     const BEGIN: &str = "SERIAL_UART_TEST_BEGIN";
     const END: &str = "SERIAL_UART_TEST_END";
-    let expected_body = ["UART 9600 8N1 OK", "hello from msp430fr5969"];
+    let uart_line = format!("UART {baud} 8N1 OK");
+    let expected_body = [uart_line.as_str(), "hello from msp430fr5969"];
 
     // Bound the whole search; the fixture repeats every ~1 s, so a full burst
     // is captured well within this even if we attach mid-gap.
@@ -78,7 +99,7 @@ fn test_9600_8_n_1_comms() -> Result<(), Box<dyn Error>> {
             return Err(format!("expected {END:?} to close the burst, got {got:?}").into());
         }
 
-        println!("  verified full {BEGIN}..{END} burst at 9600 8N1");
+        println!("  verified full {BEGIN}..{END} burst at {baud} 8N1");
         return Ok(());
     }
 }
