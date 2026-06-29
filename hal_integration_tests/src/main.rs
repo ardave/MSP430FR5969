@@ -10,6 +10,7 @@ mod i2c_tests;
 mod spi_tests;
 mod adc_tests;
 mod fram_tests;
+mod rtc_tests;
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("Starting Tests");
@@ -17,6 +18,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     serial_port_tests::run()?;
     adc_tests::run()?;
     fram_tests::run()?;
+    rtc_tests::run()?;
 
     // timer_tests::run()?;
     // deep_sleep_tests::run()?;
