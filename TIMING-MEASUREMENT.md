@@ -12,7 +12,7 @@ through deep sleep.
 ## ✅ Step 1 — free-running counter, single short interval (DONE)
 
 Landed in [`hal/src/timer.rs`](hal/src/timer.rs) + demo in
-[`hal_consumer/src/main.rs`](hal_consumer/src/main.rs).
+[`hal_test_runners/src/main.rs`](hal_test_runners/src/main.rs).
 
 - `Counter::new_smclk` puts Timer0_A3 in **continuous mode** on SMCLK÷N.
 - `now()` snapshots the 16-bit `TA0R`; `elapsed_since()` does the
@@ -49,7 +49,7 @@ Goal: measure intervals longer than one 16-bit period by assembling a wider
 
 - [x] Enable the counter-overflow interrupt: `Counter::enable_overflow_interrupt`
       sets `TAIE` in `TA0CTL`; the overflow sets `TAIFG` and fires `TIMER0_A1`.
-- [x] **First real ISR** in `hal_consumer` via `#[msp430_rt::interrupt] fn
+- [x] **First real ISR** in `hal_test_runners` via `#[msp430_rt::interrupt] fn
       TIMER0_A1`. `objdump` confirmed it ends in `reti` (the `msp430-interrupt`
       ABI) and that vector slot 44 (table offset 0xFF90 + 2·44 = 0xFFE8) holds
       the handler address, overriding only its own weak default. Needed

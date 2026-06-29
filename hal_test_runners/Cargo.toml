@@ -1,5 +1,5 @@
 [package]
-name = "hal_consumer"
+name = "hal_test_runners"
 version = "0.1.0"
 edition = "2024"
 

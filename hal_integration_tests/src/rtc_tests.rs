@@ -9,7 +9,7 @@ use crate::serial::read_line;
 /// the `MSP430_UART_PORT` env var if the board enumerates differently.
 const DEFAULT_PORT: &str = "/dev/cu.usbmodem11203";
 
-/// The `rtc_test` fixture reports over the backchannel at the project's
+/// The `rtc_test_runner` fixture reports over the backchannel at the project's
 /// baseline 9600 8N1.
 const BAUD: u32 = 9600;
 
@@ -26,11 +26,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 /// involved: RTC_B is on-chip and clocked by the populated 32.768 kHz crystal, so
 /// this validates the load-and-read-back and the 1 Hz advance end-to-end.
 fn test_calendar_self_check() -> Result<(), Box<dyn Error>> {
-    deployment::build_and_flash("rtc_test")?;
+    deployment::build_and_flash("rtc_test_runner")?;
     verify_self_check_burst()
 }
 
-/// Open the board's UART (8N1) and verify the fixed verdict burst the `rtc_test`
+/// Open the board's UART (8N1) and verify the fixed verdict burst the `rtc_test_runner`
 /// fixture transmits once per second.
 ///
 /// The fixture loads the calendar to a known instant, reads it back, and checks

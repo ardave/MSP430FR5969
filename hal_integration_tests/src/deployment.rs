@@ -1,7 +1,7 @@
-//! Building and flashing of `hal_consumer` MSP430 fixture binaries.
+//! Building and flashing of `hal_test_runners` MSP430 fixture binaries.
 //!
 //! Each peripheral's integration tests are driven by a dedicated on-device
-//! binary under `hal_consumer/src/bin/`. The helpers here cross-compile and
+//! binary under `hal_test_runners/src/bin/`. The helpers here cross-compile and
 //! flash any of them by name, so every `*_tests.rs` module can stand its
 //! fixture up with one call (typically `build_and_flash("<bin>")`) instead of
 //! duplicating the cargo/DSLite plumbing.
@@ -21,7 +21,7 @@ const CCXML: &str = "MSP430FR5969.ccxml";
 /// repo root.
 const TARGET_DIR: &str = "target/msp430-none-elf/debug";
 
-/// Cross-compile the named `hal_consumer` binary for the MSP430 and flash it to
+/// Cross-compile the named `hal_test_runners` binary for the MSP430 and flash it to
 /// the attached board. The common entry point for a test module's `run()`.
 pub fn build_and_flash(bin: &str) -> Result<(), Box<dyn Error>> {
     build_and_flash_with_features(bin, &[])
@@ -29,14 +29,14 @@ pub fn build_and_flash(bin: &str) -> Result<(), Box<dyn Error>> {
 
 /// Like [`build_and_flash`], but enables the given cargo `--features` on the
 /// build. Lets one fixture source cover multiple compile-time configurations
-/// (e.g. `serial_uart` built at 9600 vs `baud_115200`) without a second binary.
+/// (e.g. `serial_uart_test_runner` built at 9600 vs `baud_115200`) without a second binary.
 pub fn build_and_flash_with_features(bin: &str, features: &[&str]) -> Result<(), Box<dyn Error>> {
     build(bin, features)?;
     flash(bin)?;
     Ok(())
 }
 
-/// Cross-compile the named `hal_consumer` binary for `msp430-none-elf`, enabling
+/// Cross-compile the named `hal_test_runners` binary for `msp430-none-elf`, enabling
 /// any requested cargo features.
 pub fn build(bin: &str, features: &[&str]) -> Result<(), Box<dyn Error>> {
     println!("  building {bin} (msp430-none-elf){}...", feature_note(features));
@@ -74,7 +74,7 @@ fn feature_note(features: &[&str]) -> String {
     }
 }
 
-/// Flash an already-built `hal_consumer` binary to the board via DSLite.
+/// Flash an already-built `hal_test_runners` binary to the board via DSLite.
 pub fn flash(bin: &str) -> Result<(), Box<dyn Error>> {
     let root = repo_root();
     let elf = root.join(TARGET_DIR).join(bin);

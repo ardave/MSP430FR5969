@@ -18,7 +18,7 @@ const WDTPW: u16 = 0x5A00;
 const WDTHOLD: u16 = 0x0080;
 
 // Baud rate (and its matching confirmation line) are selected at *build time* so
-// one fixture source covers multiple rates — see hal_consumer's `[features]`.
+// one fixture source covers multiple rates — see hal_test_runners's `[features]`.
 // Default is 9600; `--features baud_115200` overrides it. The confirmation line
 // is a fixed byte string per rate rather than a formatted integer, because
 // pulling in `core::fmt` to print the number would not fit the FRAM budget.
