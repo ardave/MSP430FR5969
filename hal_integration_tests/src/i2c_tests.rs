@@ -39,12 +39,12 @@ fn prompt_for_bme280_wiring() -> Result<(), Box<dyn Error>> {
     println!();
     println!("  ┌─ I2C bus scan: connect a BME280 breakout to eUSCI_B0 ──────────────┐");
     println!("  │                                                                    │");
-    println!("  │    BME280            MSP430FR5969 LaunchPad                         │");
-    println!("  │    ------            -------------------------                      │");
-    println!("  │    VCC / VIN  ─────  3V3                                            │");
-    println!("  │    GND        ─────  GND                                            │");
-    println!("  │    SDA / SDI  ─────  P1.6                                           │");
-    println!("  │    SCL / SCK  ─────  P1.7                                           │");
+    println!("  │    BME280   STEMMA QT wire    MSP430FR5969 LaunchPad                │");
+    println!("  │    ------   --------------    -------------------------             │");
+    println!("  │    VCC      red          ───  3V3                                   │");
+    println!("  │    GND      black        ───  GND                                   │");
+    println!("  │    SDA      blue         ───  P1.6                                  │");
+    println!("  │    SCL      yellow       ───  P1.7                                  │");
     println!("  │                                                                    │");
     println!("  │    • REMOVE the SPI loopback jumper between P1.6 and P1.7 first —   │");
     println!("  │      it shorts SDA to SCL and no transfer can work.                │");
