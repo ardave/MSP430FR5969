@@ -9,35 +9,34 @@ use crate::serial::read_line;
 /// the `MSP430_UART_PORT` env var if the board enumerates differently.
 const DEFAULT_PORT: &str = "/dev/cu.usbmodem11203";
 
-/// The `deep_sleep_test_runner` fixture reports over the backchannel at the
-/// project's baseline 9600 8N1.
+/// The `delay_test_runner` fixture reports over the backchannel at the project's
+/// baseline 9600 8N1.
 const BAUD: u32 = 9600;
 
 pub fn run() -> Result<(), Box<dyn Error>> {
-    println!("Starting Deep Sleep Tests...");
+    println!("Starting Delay Tests...");
 
-    test_lpm3_wake_self_check()?;
+    test_delay_self_check()?;
 
-    println!("Deep Sleep Tests Completed Successfully");
+    println!("Delay Tests Completed Successfully");
     Ok(())
 }
 
-/// Flash the LPM3 wake fixture and verify its self-check burst. No external wiring
-/// is involved: the part sleeps in LPM3 and wakes on an ACLK CCR0 compare driven
-/// by the populated 32.768 kHz crystal, validating `schedule_wake_in` +
-/// `enter_lpm3` end-to-end.
-fn test_lpm3_wake_self_check() -> Result<(), Box<dyn Error>> {
-    deployment::build_and_flash("deep_sleep_test_runner")?;
+/// Flash the Delay fixture and verify its self-check burst. No external wiring is
+/// involved: the software busy-loop is graded against an on-chip ACLK counter on
+/// the populated 32.768 kHz crystal, validating the ms and µs delay paths.
+fn test_delay_self_check() -> Result<(), Box<dyn Error>> {
+    deployment::build_and_flash("delay_test_runner")?;
     verify_self_check_burst()
 }
 
 /// Open the board's UART (8N1) and verify the fixed verdict burst the
-/// `deep_sleep_test_runner` fixture transmits once per second.
+/// `delay_test_runner` fixture transmits once per second.
 ///
-/// The fixture runs four LPM3 sleep/wake cycles at startup, then always emits the
-/// complete burst, so a body mismatch after BEGIN is a real failure. A missing
-/// crystal yields a single `SLEEP CLOCK FAIL` line, which likewise surfaces as a
-/// clean mismatch.
+/// The fixture grades `delay_ms`/`delay_us` against the independent crystal counter
+/// and always emits the complete burst, so a body mismatch after BEGIN is a real
+/// failure. A missing crystal yields a single `DELAY CLOCK FAIL` line, which
+/// likewise surfaces as a clean mismatch.
 fn verify_self_check_burst() -> Result<(), Box<dyn Error>> {
     let port_path =
         std::env::var("MSP430_UART_PORT").unwrap_or_else(|_| DEFAULT_PORT.to_string());
@@ -58,21 +57,21 @@ fn verify_self_check_burst() -> Result<(), Box<dyn Error>> {
     // Give the freshly-flashed board a moment to reset and start transmitting.
     thread::sleep(Duration::from_millis(500));
 
-    const BEGIN: &str = "SLEEP_TEST_BEGIN";
-    const END: &str = "SLEEP_TEST_END";
-    let expected_body = ["SLEEP WAKE OK", "SLEEP TIMING OK"];
+    const BEGIN: &str = "DELAY_TEST_BEGIN";
+    const END: &str = "DELAY_TEST_END";
+    let expected_body = ["DELAY MS OK", "DELAY US OK"];
 
-    // Bound the whole search generously: the fixture spends ~2 s (4 × 0.5 s sleeps)
-    // before its first burst, then repeats every ~1 s.
-    let deadline = Instant::now() + Duration::from_secs(20);
+    // Bound the whole search generously: the fixture spends ~1.75 s measuring the
+    // 250/500/1000 ms + 2 ms delays at startup, then repeats every ~1 s.
+    let deadline = Instant::now() + Duration::from_secs(15);
 
-    // Scan for a BEGIN marker (skipping the boot banner and the `sleep ...` line),
+    // Scan for a BEGIN marker (skipping the boot banner and the `delay ...` line),
     // then assert the verdict body and the closing END.
     loop {
         let line = read_line(port.as_mut(), deadline)?;
         if line != BEGIN {
-            // Surface the fixture's `sleep active=… cycles=…` diagnostics while
-            // scanning for BEGIN.
+            // Surface the fixture's `delay ms250=… ms500=… ms1000=… us50k=…`
+            // diagnostics while scanning for BEGIN.
             if !line.is_empty() {
                 println!("  [board] {line}");
             }
@@ -83,7 +82,7 @@ fn verify_self_check_burst() -> Result<(), Box<dyn Error>> {
             let got = read_line(port.as_mut(), deadline)?;
             if got != expected {
                 return Err(format!(
-                    "deep-sleep mismatch after BEGIN: expected {expected:?}, got {got:?}"
+                    "delay mismatch after BEGIN: expected {expected:?}, got {got:?}"
                 )
                 .into());
             }
@@ -94,7 +93,7 @@ fn verify_self_check_burst() -> Result<(), Box<dyn Error>> {
             return Err(format!("expected {END:?} to close the burst, got {got:?}").into());
         }
 
-        println!("  verified full {BEGIN}..{END} burst (4× LPM3 wake + timing)");
+        println!("  verified full {BEGIN}..{END} burst (ms + µs delays vs crystal)");
         return Ok(());
     }
 }
