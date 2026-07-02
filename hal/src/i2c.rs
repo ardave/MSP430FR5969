@@ -79,10 +79,18 @@ const UCNACKIFG: u16 = 1 << 5; // NACK received (no/!ACK from the addressed slav
 const UCCLTOIFG: u16 = 1 << 7; // Clock-low timeout elapsed (SCL held low too long)
 
 // Software backstop on every wait loop, in iterations. The hardware clock-low
-// timeout (UCCLTO, ~28 ms) is the primary anti-hang mechanism; this only
-// guarantees termination for a stall that never pulls SCL low. Sized far above
-// any legitimate per-byte wait (even with slave clock-stretching) yet finite.
-const TIMEOUT_BUDGET: u32 = 200_000;
+// timeout (UCCLTO, ~28 ms) is the primary anti-hang mechanism and catches every
+// SCL-held-low stall; this only has to terminate the rarer stall that never
+// pulls SCL low (e.g. a wedged address phase with SCL idle high).
+//
+// Keep it well above UCCLTO's ~28 ms so it never preempts a legitimate
+// clock-stretch, but NOT orders of magnitude above: at MCLK 1 MHz this loop runs
+// ~50 cycles/iter, so 200_000 was ~10 s *per stuck op*. A bus scan issues 112
+// probes back to back, turning a single wedged bus into minutes of dead silence
+// on the UART — which is indistinguishable from a hung board. At ~2_000 (~100 ms
+// at 1 MHz) a fully wedged 112-address scan still finishes in a couple seconds
+// and reports a clean SCAN FAIL instead of going dark.
+const TIMEOUT_BUDGET: u32 = 2_000;
 
 // ---------------------------------------------------------------------------
 // Pin mux: SDA = P1.6, SCL = P1.7, both at SEL1:SEL0 = 10.
@@ -93,9 +101,15 @@ const TIMEOUT_BUDGET: u32 = 200_000;
 // needs no separate clock pin — SCL rides on what SPI calls the SOMI pin.
 // ---------------------------------------------------------------------------
 
+const P1IN: usize = 0x0200;
+const P1OUT: usize = 0x0202;
+const P1DIR: usize = 0x0204;
+const P1REN: usize = 0x0206;
 const P1SEL0: usize = 0x020A;
 const P1SEL1: usize = 0x020C;
-const P1_I2C_PINS: u8 = (1 << 6) | (1 << 7); // P1.6 SDA, P1.7 SCL
+const P1_SDA: u8 = 1 << 6; // P1.6 = SDA
+const P1_SCL: u8 = 1 << 7; // P1.7 = SCL
+const P1_I2C_PINS: u8 = P1_SDA | P1_SCL;
 
 #[inline(always)]
 unsafe fn read_reg(addr: usize) -> u16 {
@@ -127,6 +141,69 @@ unsafe fn set_bits_u8(addr: usize, mask: u8) {
 unsafe fn clear_bits_u8(addr: usize, mask: u8) {
     let p = addr as *mut u8;
     p.write_volatile(p.read_volatile() & !mask);
+}
+
+#[inline(always)]
+unsafe fn read_u8(addr: usize) -> u8 {
+    (addr as *const u8).read_volatile()
+}
+
+/// Crude busy-wait for the bus-clear bit-bang. Exact timing is irrelevant — a
+/// wedged slave releases SDA on a clock *edge*, not at a precise rate — so this
+/// just has to be slow enough to look like a clock (tens of µs is plenty). The
+/// volatile read keeps the loop from being optimized away.
+#[inline(never)]
+fn spin(iters: u16) {
+    for _ in 0..iters {
+        unsafe {
+            let _ = read_u8(P1IN);
+        }
+    }
+}
+
+/// I2C bus-clear (SLAU367P / I2C-bus spec §3.1.16). A slave that was reset or
+/// interrupted mid-byte can be left driving SDA low, waiting for the clocks to
+/// finish the transfer it thinks is in progress. In that state the master can
+/// never win the bus — every START fails, because SDA is already low — and no
+/// amount of re-init fixes it (the slave, not the master, is stuck). Power-
+/// cycling the *slave* clears it, but so does simply giving it the clocks it is
+/// waiting for: toggle SCL up to 9 times (one full byte + ACK) until the slave
+/// releases SDA, which the master reads via its internal pull-up.
+///
+/// Run before muxing the pins to the eUSCI (while they are still plain GPIO), so
+/// it is pure bit-bang on P1.6/P1.7. Cheap and self-guarding: if SDA is already
+/// high it does nothing but a couple of register writes.
+fn bus_clear() {
+    unsafe {
+        // GPIO function for both pins (SEL = 00).
+        clear_bits_u8(P1SEL1, P1_I2C_PINS);
+        clear_bits_u8(P1SEL0, P1_I2C_PINS);
+        // SDA: input with pull-up, so a released bus reads high.
+        clear_bits_u8(P1DIR, P1_SDA);
+        set_bits_u8(P1OUT, P1_SDA);
+        set_bits_u8(P1REN, P1_SDA);
+        // SCL: output, idle high.
+        set_bits_u8(P1OUT, P1_SCL);
+        set_bits_u8(P1DIR, P1_SCL);
+        spin(100);
+
+        if read_u8(P1IN) & P1_SDA == 0 {
+            for _ in 0..9 {
+                clear_bits_u8(P1OUT, P1_SCL); // SCL low
+                spin(100);
+                set_bits_u8(P1OUT, P1_SCL); // SCL high
+                spin(100);
+                if read_u8(P1IN) & P1_SDA != 0 {
+                    break; // slave let go of SDA
+                }
+            }
+        }
+
+        // Hand the pins back as plain GPIO inputs; init() muxes them to the
+        // eUSCI next, which overrides DIR/OUT/REN via the SEL bits.
+        clear_bits_u8(P1DIR, P1_I2C_PINS);
+        clear_bits_u8(P1REN, P1_I2C_PINS);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +294,10 @@ impl I2c {
         // Synchronous (UCSYNC) I2C (UCMODE=11) master (UCMST), BRCLK = SMCLK,
         // held in reset for programming.
         let ctlw0 = UCSWRST | UCSYNC | UCMODE_I2C | UCMST | UCSSEL_SMCLK;
+
+        // 0. Recover a wedged bus (slave stuck holding SDA low) while the pins are
+        //    still GPIO, before the eUSCI takes them over. No-op if SDA is idle high.
+        bus_clear();
 
         unsafe {
             // 1. Hold in reset while programming.

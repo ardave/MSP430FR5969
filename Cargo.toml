@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "hal",
-    "hal_consumer",
+    "hal_test_runners",
     "pac",
     "pac_consumer",
 ]

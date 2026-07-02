@@ -1,11 +1,12 @@
 #![no_std]
 #![no_main]
 
-//! FRAM read/write demo for the `hal::fram` storage backends.
+//! FRAM read/write integration fixture for the `hal::fram` storage backends.
 //!
 //! Exercises both FRAM regions and reports over the UART backchannel (eUSCI_A0,
-//! 9600 8N1 on `/dev/cu.usbmodem11203`). Unlike the SPI/I2C demos this needs no
-//! wiring beyond the LaunchPad itself — FRAM is on-chip.
+//! 9600 8N1 on `/dev/cu.usbmodem11203`), driven by the host-side `fram_tests`
+//! runner. Unlike the SPI/I2C demos this needs no wiring beyond the LaunchPad
+//! itself — FRAM is on-chip.
 //!
 //! ```text
 //! cargo +nightly build --bin fram_test
@@ -28,10 +29,25 @@
 //!    second and later boots it can confirm the previous boot's pattern
 //!    persisted.
 //!
-//! The boot count and a `HIGH FRAM OK` / `FAIL` line are printed once over UART
-//! at startup. The **GREEN** LED then blinks the boot count on a loop (so each
-//! power-cycle adds one visible blink — the persisted counter without a UART); a
-//! steady **RED** LED means the upper-FRAM round-trip failed.
+//! # Framed output for the host runner
+//!
+//! Like the `serial_uart` and `adc_internal` fixtures, this emits a self-delimited
+//! burst once per second, forever, so the host test can attach at any time after
+//! the `DSLite load` reset and still catch a complete cycle. Each cycle, over UART:
+//!
+//! ```text
+//! boot count: 7 (persisted from last boot)   (human-readable info, skipped by host)
+//! FRAM_TEST_BEGIN
+//! INFO FRAM OK                                 (or `... FAIL` if the counter read-back differs)
+//! HIGH FRAM OK                                 (or `... FAIL` if the upper-FRAM round-trip differs)
+//! FRAM_TEST_END
+//! ```
+//!
+//! The counter increment, the upper-FRAM round-trip, and their pass/fail verdicts
+//! are all computed **once** at startup; the loop just re-emits the fixed verdict
+//! lines and toggles the **GREEN** LED as a heartbeat. A steady **RED** LED means
+//! a FRAM round-trip failed. The boot count in the info line still climbs by one
+//! on every power-cycle — the persisted counter, observable over `screen`.
 
 use hal::delay::Delay;
 use hal::embedded_hal::delay::DelayNs as _;
@@ -113,9 +129,12 @@ fn main() -> ! {
     };
     info.write(4, &count.to_le_bytes()).ok();
 
-    tx.write_all(b"boot count: ").ok();
-    write_u32(&mut tx, count);
-    tx.write_all(b" (survives power-cycle)\r\n").ok();
+    // Read the counter back to confirm the write actually stuck — an in-boot
+    // round-trip the host can assert on. (Cross-power-cycle persistence is the
+    // human-observable extra reported in the info line below.)
+    let mut readback = [0u8; 4];
+    info.read(4, &mut readback).ok();
+    let info_ok = u32::from_le_bytes(readback) == count;
 
     // --- 2. Upper-FRAM round-trip (20-bit access, "beyond 48K") -------------
     // Read first so we can tell if the previous boot's pattern persisted.
@@ -133,42 +152,54 @@ fn main() -> ! {
     let mut top = [0u8; 1];
     high.read(0x3FFF, &mut top).ok();
 
-    let ok = after == PATTERN && top[0] == 0x5A;
+    let high_ok = after == PATTERN && top[0] == 0x5A;
 
-    tx.write_all(b"high fram (0x10000): ").ok();
-    if ok {
-        tx.write_all(b"HIGH FRAM OK").ok();
-    } else {
-        tx.write_all(b"FAIL").ok();
-    }
-    if persisted {
-        tx.write_all(b", persisted from last boot").ok();
-    }
-    tx.write_all(b"\r\n").ok();
-
-    // Visual boot counter: on each cycle, blink the GREEN LED `count` times, then
-    // hold a long gap so the groups are distinguishable. Power-cycle the board and
-    // you'll literally see one more blink each time — the persisted count, no UART
-    // needed. A steady RED LED means the high-FRAM round-trip failed.
+    // A self-delimited verdict burst, repeated once per second so the host runner
+    // can attach at any time after the DSLite reset and still frame a full
+    // BEGIN..END cycle. The GREEN LED toggles each cycle as a heartbeat; a steady
+    // RED LED means a FRAM round-trip failed.
+    let mut on = false;
     loop {
-        if !ok {
+        // Human-readable info line (the host skips everything up to BEGIN): the
+        // persisted boot count, which climbs by one on every power-cycle.
+        tx.write_all(b"boot count: ").ok();
+        write_u32(&mut tx, count);
+        if persisted {
+            tx.write_all(b" (persisted from last boot)").ok();
+        }
+        tx.write_all(b"\r\n").ok();
+
+        // Fixed, greppable verdict lines framed by BEGIN/END. A bad round-trip
+        // flips a verdict to FAIL, which the host asserts against.
+        tx.write_all(b"FRAM_TEST_BEGIN\r\n").ok();
+        tx.write_all(if info_ok {
+            b"INFO FRAM OK\r\n" as &[u8]
+        } else {
+            b"INFO FRAM FAIL\r\n"
+        })
+        .ok();
+        tx.write_all(if high_ok {
+            b"HIGH FRAM OK\r\n" as &[u8]
+        } else {
+            b"HIGH FRAM FAIL\r\n"
+        })
+        .ok();
+        tx.write_all(b"FRAM_TEST_END\r\n").ok();
+
+        if info_ok && high_ok {
+            red_led.set_low().ok();
+            on = !on;
+            if on {
+                green_led.set_high().ok();
+            } else {
+                green_led.set_low().ok();
+            }
+        } else {
             red_led.set_high().ok();
             green_led.set_low().ok();
-            delay.delay_ms(1000);
-            continue;
         }
-        red_led.set_low().ok();
 
-        let mut i = 0u32;
-        while i < count {
-            green_led.set_high().ok();
-            delay.delay_ms(200);
-            green_led.set_low().ok();
-            delay.delay_ms(300);
-            i += 1;
-        }
-        // Long dark gap between groups so the blink count reads cleanly.
-        delay.delay_ms(2000);
+        delay.delay_ms(1000);
     }
 }
 

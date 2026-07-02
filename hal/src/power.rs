@@ -34,8 +34,13 @@ pub fn enter_lpm3() {
     // SAFETY: writing SR to enter a low-power mode; no memory or stack effects.
     // Not `preserves_flags` — `bis` to SR changes the status bits by design.
     unsafe {
+        // The `#` is load-bearing: it forces immediate addressing (`bis #0xD8,
+        // r2`). Without it the assembler encodes symbolic mode (`bis 0xD8(PC),
+        // r2`), which ORs the *word stored at* PC+0xD8 into SR instead of the
+        // constant — CPUOFF stays clear, the CPU never halts, and `enter_lpm3`
+        // falls straight through (the timer wake fires "immediately").
         core::arch::asm!(
-            "bis {bits}, r2",
+            "bis #{bits}, r2",
             "nop",
             bits = const LPM3_GIE,
             options(nomem, nostack),

@@ -44,7 +44,7 @@
 //! [`Counter::now32`] assembles those tallies with `TAxR` into a 32-bit
 //! timestamp (~71 minutes before *it* wraps, at the 1 MHz tick). The ISR, the
 //! shared counter, and enabling interrupts globally live in the application —
-//! see `hal_consumer` for a worked example.
+//! see `hal_test_runners` for a worked example.
 //!
 //! # Hardware capture
 //!

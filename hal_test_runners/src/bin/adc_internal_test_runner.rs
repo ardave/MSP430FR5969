@@ -1,10 +1,11 @@
 #![no_std]
 #![no_main]
 
-//! ADC12_B **internal-channel** demo — measures with NO external wiring.
+//! ADC12_B **internal-channel** integration fixture — validates with NO external
+//! wiring, driven by the host-side `adc_tests` runner.
 //!
-//! Unlike `adc_read` (which needs a voltage on P1.4), this reads the converter's
-//! two on-chip sources, so the only thing you do is flash and watch the UART:
+//! Reads the converter's two on-chip sources, so the only thing the test harness
+//! does is flash and listen on the UART backchannel:
 //!
 //! ```text
 //! cargo +nightly build --bin adc_internal
@@ -16,17 +17,31 @@
 //! - **(AVCC–AVSS)/2 supply monitor.** Measured against the AVCC reference this
 //!   is ratiometric, so it must read ≈ **half full-scale (~2048 counts, ~1650
 //!   mV)** regardless of the actual supply. That fixed, predictable value is the
-//!   point: it confirms the ADC converts correctly with nothing connected.
+//!   point: it confirms the ADC converts correctly with nothing connected. The
+//!   reading is self-checked against a ±10% window of half-scale on-device.
 //! - **Temperature sensor (raw).** Reads **~0** on this driver — the sensor is
 //!   part of the REF_A module and is unpowered unless `REFON` is set, which we
-//!   do not do (no REF_A support yet). Printed anyway to make that concrete; it
-//!   will come alive once REF_A is brought up. (Verified on hardware 2026-06-27.)
+//!   do not do (no REF_A support yet). It will come alive once REF_A is brought
+//!   up. (Verified on hardware 2026-06-27.)
 //!
-//! Over UART (9600 8N1 on eUSCI_A0) each line looks like
-//! `AVCC/2: 2051 = 1652 mV   TEMP raw: 0`. **GREEN** LED if the supply-monitor
-//! reading lands within ~10% of half-scale (the self-check passed), **RED**
-//! otherwise. A long sample time is used because the supply divider is
-//! high-impedance.
+//! # Framed output for the host runner
+//!
+//! Like the `serial_uart` fixture, this emits a self-delimited burst once per
+//! second, forever, so the host test can attach at any time and still catch a
+//! complete cycle. Each cycle, over UART (9600 8N1 on eUSCI_A0):
+//!
+//! ```text
+//! AVCC/2: 2051 = 1652 mV   TEMP raw: 0   (human-readable info, skipped by host)
+//! ADC_INTERNAL_TEST_BEGIN
+//! AVCC/2 SELF-CHECK OK                    (or `... FAIL` if outside the window)
+//! TEMP SENSOR OFF                         (or `TEMP SENSOR ON` if it reads hot)
+//! ADC_INTERNAL_TEST_END
+//! ```
+//!
+//! The verdict lines inside the frame are fixed, greppable strings the host
+//! asserts on; a FAIL/ON verdict makes the host mismatch and fail the test.
+//! **GREEN** LED while the supply self-check passes, **RED** otherwise. A long
+//! sample time is used because the supply divider is high-impedance.
 
 use hal::adc::{Adc, Config as AdcConfig, SampleTime};
 use hal::delay::Delay;
@@ -51,6 +66,11 @@ const AVCC_MV: u32 = 3300;
 // Half-scale at 12-bit, and a ±10% acceptance window for the supply self-check.
 const HALF_SCALE: u16 = 2048;
 const WINDOW: u16 = 205; // ~10% of 2048
+
+// The temperature sensor is unpowered (REF_A off), so its raw reading sits near
+// zero; anything below this counts as "off". Generous so sensor noise near the
+// floor never flips the verdict.
+const TEMP_OFF_MAX: u16 = 100;
 
 /// Firmware entry point.
 #[entry]
@@ -91,6 +111,7 @@ fn main() -> ! {
 
     let mut delay = Delay::new(clocks.mclk());
 
+    // One-time banner so a human watching `screen` sees what this binary is.
     tx.write_all(b"MSP430FR5969 ADC12_B internal channels (no wiring)\r\n")
         .ok();
 
@@ -99,6 +120,13 @@ fn main() -> ! {
         let supply_mv = (supply as u32 * AVCC_MV) / 4095;
         let temp = adc.read_temperature_raw();
 
+        // Self-check the supply monitor (within ±10% of half-scale) and that the
+        // temperature sensor is unpowered (near zero, REF_A off).
+        let supply_ok = supply > HALF_SCALE - WINDOW && supply < HALF_SCALE + WINDOW;
+        let temp_off = temp <= TEMP_OFF_MAX;
+
+        // Human-readable info line. The host runner skips everything up to the
+        // BEGIN marker, so this is purely for someone watching over `screen`.
         tx.write_all(b"AVCC/2: ").ok();
         write_dec(&mut tx, supply as u32);
         tx.write_all(b" = ").ok();
@@ -107,9 +135,26 @@ fn main() -> ! {
         write_dec(&mut tx, temp as u32);
         tx.write_all(b"\r\n").ok();
 
-        // Self-check: the supply monitor should sit within ~10% of half-scale.
-        let ok = supply > HALF_SCALE - WINDOW && supply < HALF_SCALE + WINDOW;
-        if ok {
+        // A self-delimited burst of fixed, greppable verdict lines. The
+        // BEGIN/END markers let the host frame one cycle; the verdict strings
+        // flip to FAIL/ON on a bad reading, which the host asserts against.
+        tx.write_all(b"ADC_INTERNAL_TEST_BEGIN\r\n").ok();
+        tx.write_all(if supply_ok {
+            b"AVCC/2 SELF-CHECK OK\r\n" as &[u8]
+        } else {
+            b"AVCC/2 SELF-CHECK FAIL\r\n"
+        })
+        .ok();
+        tx.write_all(if temp_off {
+            b"TEMP SENSOR OFF\r\n" as &[u8]
+        } else {
+            b"TEMP SENSOR ON\r\n"
+        })
+        .ok();
+        tx.write_all(b"ADC_INTERNAL_TEST_END\r\n").ok();
+
+        // GREEN while the supply self-check passes, RED otherwise.
+        if supply_ok {
             green_led.set_high().ok();
             red_led.set_low().ok();
         } else {
@@ -117,7 +162,7 @@ fn main() -> ! {
             green_led.set_low().ok();
         }
 
-        delay.delay_ms(500);
+        delay.delay_ms(1000);
     }
 }
 

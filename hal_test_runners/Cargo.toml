@@ -1,7 +1,13 @@
 [package]
-name = "hal_consumer"
+name = "hal_test_runners"
 version = "0.1.0"
 edition = "2024"
+
+[features]
+# Build the `serial_uart` integration fixture at 115200 baud instead of the
+# default 9600. Selects a compile-time baud constant + confirmation line in
+# src/bin/serial_uart.rs, so one source covers both rates (no second binary).
+baud_115200 = []
 
 [dependencies]
 hal = { path = "../hal", features = ["rt", "critical-section"] }
