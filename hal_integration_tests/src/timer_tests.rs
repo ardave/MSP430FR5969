@@ -5,10 +5,6 @@ use std::time::{Duration, Instant};
 use crate::deployment;
 use crate::serial::read_line;
 
-/// Default macOS device node for the eUSCI_A0 UART backchannel. Override with
-/// the `MSP430_UART_PORT` env var if the board enumerates differently.
-const DEFAULT_PORT: &str = "/dev/cu.usbmodem11203";
-
 /// The `timer_test_runner` fixture reports over the backchannel at the project's
 /// baseline 9600 8N1.
 const BAUD: u32 = 9600;
@@ -38,8 +34,7 @@ fn test_counter_self_check() -> Result<(), Box<dyn Error>> {
 /// complete burst, so a body mismatch after BEGIN is a real failure (a failed
 /// check flips the line to `FAIL`).
 fn verify_self_check_burst() -> Result<(), Box<dyn Error>> {
-    let port_path =
-        std::env::var("MSP430_UART_PORT").unwrap_or_else(|_| DEFAULT_PORT.to_string());
+    let port_path = crate::serial::resolve_port()?;
 
     println!("  opening {port_path} @ {BAUD} 8N1...");
     let mut port = serialport::new(&port_path, BAUD)

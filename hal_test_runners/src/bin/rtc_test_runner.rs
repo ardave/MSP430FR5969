@@ -70,10 +70,6 @@ use msp430_rt::entry;
 // pac's Peripherals::take().
 use msp430 as _;
 
-// Watchdog Timer Password / Hold.
-const WDTPW: u16 = 0x5A00;
-const WDTHOLD: u16 = 0x0080;
-
 /// The instant the calendar is started at: Sat 2026-06-27 09:30:00.
 const START: DateTime = DateTime {
     year: 2026,
@@ -88,13 +84,8 @@ const START: DateTime = DateTime {
 /// Firmware entry point.
 #[entry]
 fn main() -> ! {
-    // Stop the watchdog before anything else (default timeout ~32 ms, and
-    // Peripherals::take() enters a critical section).
-    unsafe {
-        (0x015C as *mut u16).write_volatile(WDTPW | WDTHOLD);
-    }
-
-    let p = hal::pac::Peripherals::take().unwrap();
+    // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
+    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
 
     // Low-power profile: ACLK on the 32.768 kHz LFXT crystal — required for the
     // RTC to keep correct time. SMCLK = 1 MHz still feeds the UART BRCLK.

@@ -33,16 +33,10 @@ use msp430_rt::entry;
 
 use msp430 as _;
 
-const WDTPW: u16 = 0x5A00;
-const WDTHOLD: u16 = 0x0080;
-
 #[entry]
 fn main() -> ! {
-    unsafe {
-        (0x015C as *mut u16).write_volatile(WDTPW | WDTHOLD);
-    }
-
-    let p = hal::pac::Peripherals::take().unwrap();
+    // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
+    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
     let clocks = hal::clocks::configure(p.cs);
     p.pmm.pm5ctl0().modify(|_, w| w.locklpm5().clear_bit());
 

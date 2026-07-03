@@ -41,20 +41,11 @@ use msp430_rt::entry;
 // pac's Peripherals::take().
 use msp430 as _;
 
-// Watchdog Timer Password / Hold.
-const WDTPW: u16 = 0x5A00;
-const WDTHOLD: u16 = 0x0080;
-
 /// Firmware entry point.
 #[entry]
 fn main() -> ! {
-    // Stop the watchdog before anything else (default timeout ~32 ms, and
-    // Peripherals::take() enters a critical section).
-    unsafe {
-        (0x015C as *mut u16).write_volatile(WDTPW | WDTHOLD);
-    }
-
-    let p = hal::pac::Peripherals::take().unwrap();
+    // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
+    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
 
     // MCLK 1 MHz, SMCLK 8 MHz. SMCLK feeds both the UART BRCLK and the I2C
     // bit-rate generator below.
