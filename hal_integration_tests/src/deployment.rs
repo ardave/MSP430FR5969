@@ -80,10 +80,85 @@ pub fn flash(bin: &str) -> Result<(), Box<dyn Error>> {
     let elf = root.join(TARGET_DIR).join(bin);
     let ccxml = root.join(CCXML);
 
-    println!("  flashing {bin} to board...");
+    let deployed = deployed_size(&elf)?;
+    println!(
+        "  flashing {bin} to board ({} deployed to FRAM, {deployed} bytes)...",
+        human_size(deployed)
+    );
     let sh = Shell::new()?;
     cmd!(sh, "{DSLITE} load -c {ccxml} -f {elf}").run()?;
     Ok(())
+}
+
+/// The number of bytes DSLite will actually program into the chip: the sum of
+/// the ELF's allocated, content-bearing section sizes (`SHF_ALLOC` set, type
+/// not `SHT_NOBITS`) — `.text` + `.rodata` + `.data` + `.vector_table`.
+///
+/// The ELF's on-disk size is the wrong number to report — a debug build is
+/// dominated by DWARF sections that never leave the host. Program headers are
+/// wrong too, subtly: this linker emits the `.bss` segment with a nonzero
+/// `p_filesz` even though `.bss` is `SHT_NOBITS`, so summing `PT_LOAD` file
+/// sizes over-counts (observed: +148 B vs what DSLite reports programming).
+/// Sections carry the honest answer, and it matches both `msp430-elf-size`'s
+/// text+data and DSLite's "Flash/FRAM usage" line. The ELF32 header layout is
+/// stable enough to read the three needed fields directly rather than pull in
+/// an ELF-parsing dependency.
+fn deployed_size(elf: &Path) -> Result<u64, Box<dyn Error>> {
+    let bytes = std::fs::read(elf)?;
+    let name = elf.display();
+
+    // ELF ident: magic, then class/endianness. msp430-none-elf is ELF32 LE;
+    // anything else here means we are looking at the wrong file.
+    if bytes.len() < 52 || bytes[..4] != [0x7F, b'E', b'L', b'F'] {
+        return Err(format!("{name} is not an ELF file").into());
+    }
+    if bytes[4] != 1 || bytes[5] != 1 {
+        return Err(format!("{name} is not a 32-bit little-endian ELF").into());
+    }
+
+    let u16_at = |off: usize| u16::from_le_bytes([bytes[off], bytes[off + 1]]) as usize;
+    let u32_at = |off: usize| {
+        u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+    };
+
+    // Section-header table location, from the fixed ELF32 header offsets.
+    let sh_off = u32_at(0x20) as usize;
+    let sh_entsize = u16_at(0x2E);
+    let sh_num = u16_at(0x30);
+    if sh_entsize < 40 {
+        return Err(format!("{name} has malformed section headers").into());
+    }
+
+    const SHT_NOBITS: u32 = 8; // occupies memory but no file/flash content (.bss)
+    const SHF_ALLOC: u32 = 0x2; // occupies target memory at run time
+
+    let mut total: u64 = 0;
+    for i in 0..sh_num {
+        let entry = sh_off + i * sh_entsize;
+        if entry + 40 > bytes.len() {
+            return Err(format!("{name} has a truncated section-header table").into());
+        }
+        let sh_type = u32_at(entry + 4);
+        let sh_flags = u32_at(entry + 8);
+        if sh_flags & SHF_ALLOC != 0 && sh_type != SHT_NOBITS {
+            total += u32_at(entry + 20) as u64; // sh_size
+        }
+    }
+    Ok(total)
+}
+
+/// Render a byte count for humans: `999 B`, `18.2 KB`, `1.4 MB` (1 KB = 1024 B,
+/// the embedded convention — matches how the 48 KB FRAM region is described).
+fn human_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    let b = bytes as f64;
+    if b < KB {
+        format!("{bytes} B")
+    } else if b < KB * KB {
+        format!("{:.1} KB", b / KB)
+    } else {
+        format!("{:.1} MB", b / (KB * KB))
+    }
 }
 
 /// Repo root = parent of this crate's manifest directory.
