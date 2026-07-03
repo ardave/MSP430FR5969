@@ -26,7 +26,7 @@
 //! temperature pairs already embed its gain/offset error — the temperature
 //! interpolation therefore uses **raw** readings, while absolute-voltage
 //! corrections chain gain → offset → REF factor explicitly (the methods here
-//! delegate to the pure math in `adc_cal.rs`, host-tested by `adc-cal-test/`).
+//! delegate to the pure math in `adc_cal.rs`, host-tested in `unit_tests/`).
 //!
 //! Reads are plain loads: the table is ordinary (write-protected) FRAM. The
 //! info-block CRC is not verified here.

@@ -1,6 +1,6 @@
 //! Host-side tests for the ADC calibration / scaling math.
 //!
-//! This crate `include!`s the REAL driver source (`hal/src/adc_cal.rs`) so the
+//! This module `include!`s the REAL driver source (`hal/src/adc_cal.rs`) so the
 //! tests exercise the exact code that ships in firmware — editing the
 //! temperature interpolation or the fixed-point corrections incorrectly will
 //! fail these tests.
@@ -8,8 +8,6 @@
 //! The formulas under test are the SLAU367 ones: temperature is a linear
 //! interpolation between the factory 30 °C / 85 °C TLV points (§28.2.8), and
 //! the gain/offset/REF corrections are 1.15 fixed-point multiplies (§28.2.7.5).
-
-#![allow(dead_code)]
 
 // Pull in the actual driver math (pure, dependency-free core arithmetic).
 include!("../../hal/src/adc_cal.rs");

@@ -2,7 +2,7 @@
 //
 // Like `baud.rs` and `ticks.rs`, this file is intentionally dependency-free
 // (pure `core` integer arithmetic, no PAC/HAL types) so the exact same source
-// can be `include!`d by the host-side test crate in `adc-cal-test/`. The
+// can be `include!`d by the host-side test crate in `unit_tests/`. The
 // `tlv::AdcCal`/`tlv::RefCal` methods and `Adc::to_millivolts` are thin
 // wrappers over these functions, so a regression in the math fails the host
 // tests. Do not add external `use`s here.

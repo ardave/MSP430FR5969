@@ -2,7 +2,7 @@
 //
 // Like `baud.rs`, this file is intentionally dependency-free (pure `core`
 // integer arithmetic, no PAC/HAL types) so the exact same source can be
-// `include!`d by the host-side test crate in `timer-test/`. The `Counter`
+// `include!`d by the host-side test crate in `unit_tests/`. The `Counter`
 // methods are thin wrappers over these functions, so a regression in the
 // conversion math fails the host tests. Do not add external `use`s here.
 // (Regular `//` comments, not `//!`, so the file can be `include!`d mid-crate.)

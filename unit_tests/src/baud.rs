@@ -1,6 +1,6 @@
 //! Host-side tests for the eUSCI_A baud-rate math.
 //!
-//! This crate `include!`s the REAL driver source (`hal/src/baud.rs`) so the
+//! This module `include!`s the REAL driver source (`hal/src/baud.rs`) so the
 //! tests exercise the exact code that ships in firmware — editing
 //! `UCBRS_TABLE` or `compute_baud` incorrectly will fail these tests.
 //!
@@ -11,8 +11,6 @@
 //! is the resulting average bit-timing error, not an exact register match.
 //! Exact-match statistics are checked separately where the procedure is
 //! deterministic.
-
-#![allow(dead_code)]
 
 // Pull in the actual driver math (pure, dependency-free core arithmetic).
 include!("../../hal/src/baud.rs");

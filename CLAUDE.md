@@ -24,22 +24,21 @@ cargo +nightly build
 cargo +nightly check
 
 # Run the host-side math tests (NOT on the msp430 target)
-cd baud-test && cargo +nightly test     # UART baud-rate math
-cd timer-test && cargo +nightly test    # timer tick<->time math
-cd adc-cal-test && cargo +nightly test  # ADC calibration/scaling math
+cd unit_tests && cargo +nightly test
 ```
 
 Requires the **nightly** Rust toolchain (for `-Z build-std=core` on the `msp430-none-elf` target). The TI MSP430 GCC toolchain must be installed — the linker path is hardcoded in `.cargo/config.toml`.
 
 ## Testing
 
-Most firmware can only be validated on hardware, but pure logic is tested on the host. The pattern: keep the pure arithmetic in a dependency-free file (no PAC/HAL types, `//` not `//!` comments so it can be `include!`d mid-crate), and have a **detached test crate** (its own `[workspace]` table + `.cargo/config.toml` overriding the target back to the host triple `aarch64-apple-darwin`, with `build-std = ["std"]` to neutralize the inherited `build-std = ["core"]`) `include!` that real source. Because the test includes the actual shipping source, a bad edit to the math fails the tests. Three such crates exist:
+Most firmware can only be validated on hardware, but pure logic is tested on the host. The pattern: keep the pure arithmetic in a dependency-free file (no PAC/HAL types, `//` not `//!` comments so it can be `include!`d mid-crate), and have the **detached `unit_tests/` crate** (its own `[workspace]` table + `.cargo/config.toml` overriding the target back to the host triple `aarch64-apple-darwin`, with `build-std = ["std"]` to neutralize the inherited `build-std = ["core"]` — and, being outside the workspace, escaping the `panic = "abort"` dev profile that would break libtest) `include!` that real source, one module per subject. Because the tests include the actual shipping source, a bad edit to the math fails them. Current modules:
 
-- `baud-test/` includes `hal/src/baud.rs` and checks `compute_baud`/`ucbrs_lookup` against SLAU367P Table 30-5. The pass/fail criterion is the resulting average bit-timing error (< 2%), since the driver follows the datasheet *procedure* while Table 30-5 lists values from a separate lowest-error search — the two legitimately differ in some rows (mode choice near N≈16, and alternate `UCBRSx` bytes).
-- `timer-test/` includes `hal/src/ticks.rs` (the tick↔time math `Counter` delegates to: `ticks_to_us`/`ticks_to_ns`/`assemble_now64`) and checks exact conversions, the `u64`-widening overflow guard, and the `now64` bit-packing.
-- `adc-cal-test/` includes `hal/src/adc_cal.rs` (the math `tlv::AdcCal`/`tlv::RefCal`/`Adc::to_millivolts` delegate to) and checks the SLAU367 temperature interpolation (30/85 °C TLV points, deci-°C, half-away-from-zero rounding), the 1.15 fixed-point gain/offset/REF corrections (unity identity, clamping), and count→mV rounding.
+- `baud` includes `hal/src/baud.rs` and checks `compute_baud`/`ucbrs_lookup` against SLAU367P Table 30-5. The pass/fail criterion is the resulting average bit-timing error (< 2%), since the driver follows the datasheet *procedure* while Table 30-5 lists values from a separate lowest-error search — the two legitimately differ in some rows (mode choice near N≈16, and alternate `UCBRSx` bytes).
+- `ticks` includes `hal/src/ticks.rs` (the tick↔time math `Counter` delegates to: `ticks_to_us`/`ticks_to_ns`/`assemble_now32`) and checks exact conversions, the `u64`-widening overflow guard, and the `now32` bit-packing.
+- `fram_addr` includes `hal/src/fram_addr.rs` and pins the FRAM region geometry (Info 0x1800/512 B, upper 0x10000/16 KB) plus the overflow-safe `check_bounds`.
+- `adc_cal` includes `hal/src/adc_cal.rs` (the math `tlv::AdcCal`/`tlv::RefCal`/`Adc::to_millivolts` delegate to) and checks the SLAU367 temperature interpolation (30/85 °C TLV points, deci-°C, half-away-from-zero rounding), the 1.15 fixed-point gain/offset/REF corrections (unity identity, clamping), and count→mV rounding.
 
-Run with `cd <crate> && cargo +nightly test`. The host triple in each `.cargo/config.toml` is `aarch64-apple-darwin`; change it for other hosts.
+Run with `cd unit_tests && cargo +nightly test` (must be run from inside the directory so its `.cargo/config.toml` takes precedence). The host triple there is `aarch64-apple-darwin`; change it for other hosts. New pure-math files get a new module here, not a new crate.
 
 ## Hardware test setups (consumer demos)
 
@@ -66,9 +65,7 @@ The remaining demos use **different peripherals than eUSCI_B0**, so they need no
 - `hal/` — Hardware Abstraction Layer crate built on top of the PAC. Re-exports `pac`, `embedded_hal`, `embedded_hal_nb`, `embedded_io`, and `embedded_storage`. Passes through `rt` and `critical-section` features to the PAC. Modules: `gpio` (typed pins, `embedded-hal` digital traits), `serial` (eUSCI_A UART, `embedded-hal-nb` + `embedded-io`), `spi`/`i2c` (eUSCI_B0, `embedded-hal` SPI/I2C), `adc` (ADC12_B; ratiometric AVCC-referenced reads plus absolute VREF-referenced reads that take `&ref_a::Ref`), `ref_a` (REF_A shared 1.2/2.0/2.5 V reference; also powers the on-die temperature sensor), `tlv` (factory ADC/REF calibration constants from the 0x1A00 device-descriptor table), `clocks`, `delay`, `timer` (Timer_A free-running counter), `power` (LPMx), `fram` (`embedded-storage`), `pwm` (Timer_B0 PWM, `embedded_hal::pwm::SetDutyCycle`), `rtc` (RTC_B calendar; native API — embedded-hal has no RTC trait), and `watchdog` (WDT_A: pre-`take()` `disable()` free function, `Watchdog` start/feed/stop, `force_reset()` software reset; native API — embedded-hal 1.0 dropped the watchdog traits). The crate-root `hal::init(watchdog::WdtMode)` is the boot front door: watchdog policy (`Hold` / `LeaveRunning` / `Arm { source, interval }` to run boot under a chosen timeout) + `Peripherals::take()` fused in guaranteed order.
 - `pac_consumer/` — Test/experimentation binary that exercises the PAC directly. Entry point is `_start()` in `src/main.rs`.
 - `hal_test_runners/` — Test/experimentation binary that exercises the HAL. Minimal `_start()` entry point.
-- `baud-test/` — Host-target unit tests for the UART baud-rate math (see Testing below). Not part of the workspace.
-- `timer-test/` — Host-target unit tests for the timer tick↔time math (`hal/src/ticks.rs`). Not part of the workspace.
-- `adc-cal-test/` — Host-target unit tests for the ADC calibration/scaling math (`hal/src/adc_cal.rs`). Not part of the workspace.
+- `unit_tests/` — Host-target unit tests for all the HAL's pure math (baud, ticks, FRAM addressing, ADC calibration — see Testing below). Not part of the workspace.
 
 **Key configuration:**
 - `.cargo/config.toml` — Sets `msp430-none-elf` target, enables `build-std = ["core"]`, configures TI GCC linker and `mspdebug tilib` as the runner.

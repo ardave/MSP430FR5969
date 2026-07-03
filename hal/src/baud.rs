@@ -2,7 +2,7 @@
 //
 // This module is intentionally dependency-free (pure `core` integer
 // arithmetic, no PAC/HAL types) so that the exact same source can be
-// `include!`d by the host-side test crate in `baud-test/` and checked against
+// `include!`d by the host-side test crate in `unit_tests/` and checked against
 // the datasheet's recommended-settings table. Do not add external `use`s here.
 // (Regular `//` comments, not `//!`, so the file can be `include!`d mid-crate.)
 

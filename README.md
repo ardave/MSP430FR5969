@@ -17,7 +17,7 @@ project targets `msp430-none-elf` and requires the **nightly** toolchain (for
 | `hal/`           | Hardware Abstraction Layer built on the PAC: typed GPIO pins and an eUSCI_A UART driver, implementing the `embedded-hal` traits. |
 | `pac_consumer/`  | Example binary that exercises the PAC directly.                     |
 | `hal_test_runners/`  | Example binary that exercises the HAL.                              |
-| `baud-test/`     | Host-target unit tests for the UART baud-rate math (detached from the workspace). |
+| `unit_tests/`    | Host-target unit tests for the HAL's pure math — baud rate, timer ticks, FRAM addressing, ADC calibration (detached from the workspace). |
 
 ## Building
 
@@ -28,8 +28,8 @@ cargo +nightly build
 # Type-check only
 cargo +nightly check
 
-# Run the host-side baud-rate math tests (NOT on the msp430 target)
-cd baud-test && cargo +nightly test
+# Run the host-side math tests (NOT on the msp430 target)
+cd unit_tests && cargo +nightly test
 ```
 
 Flashing is done via TI's DSLite debug server; see [`CLAUDE.md`](CLAUDE.md) for
@@ -84,7 +84,7 @@ modules:
   and pull-up/pull-down/floating/push-pull mode transitions.
 - **`serial`** — eUSCI_A UART driver for `eUSCI_A0`/`eUSCI_A1`, implementing the
   `embedded-hal-nb` serial traits and the blocking `embedded-io` traits, with a
-  datasheet-derived baud-rate generator (cross-checked by `baud-test/`).
+  datasheet-derived baud-rate generator (cross-checked by `unit_tests/`).
 
 ### TODO
 

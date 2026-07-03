@@ -1,0 +1,24 @@
+# Standalone host-target unit tests for all the HAL's pure math.
+#
+# Detached from the main workspace (note the empty [workspace] table) and given
+# its own .cargo/config.toml so it builds for the host instead of inheriting the
+# repo's msp430-none-elf target. One module per subject, each `include!`ing the
+# REAL hal/src/*.rs source it tests — so an incorrect edit to any of the shipped
+# math fails these tests:
+#
+#   baud       <- hal/src/baud.rs       (eUSCI_A baud-rate procedure)
+#   ticks      <- hal/src/ticks.rs      (timer tick<->time conversions)
+#   fram_addr  <- hal/src/fram_addr.rs  (FRAM region geometry + bounds math)
+#   adc_cal    <- hal/src/adc_cal.rs    (ADC calibration / scaling math)
+#
+# Run with:  cd unit_tests && cargo test
+[package]
+name = "unit_tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"

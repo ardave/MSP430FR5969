@@ -133,9 +133,10 @@ Goal: keep timing while the part is in LPM3. **Hardware-verified (2026-06-21).**
 - [x] **Host-side unit test for the tick↔time math** (done 2026-06-21). The pure
       arithmetic was extracted from `Counter`'s methods into a dependency-free
       `hal/src/ticks.rs` (`ticks_to_us`, `ticks_to_ns`, `us_to_ticks`,
-      `assemble_now32`), mirroring `baud.rs`. New detached crate `timer-test/`
-      `include!`s that source and checks it on the host (`cd timer-test && cargo
-      +nightly test` — 10 tests). Covers exact conversions at the project's real
+      `assemble_now32`), mirroring `baud.rs`. A detached host crate
+      `include!`s that source and checks it on the host (originally
+      `timer-test/`, since consolidated into `unit_tests/` as the `ticks`
+      module: `cd unit_tests && cargo +nightly test` — 10 tests). Covers exact conversions at the project's real
       rates (8 MHz, 1 MHz, 32768 Hz, VLO), the `u64`-widening overflow guard,
       truncation, the `us_to_ticks` one-wrap range check, the `now32`
       bit-packing, and reproduces the exact Step 4 hardware readings
