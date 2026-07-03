@@ -72,10 +72,6 @@ use msp430_rt::entry;
 // pac's Peripherals::take() (and so msp430::interrupt::enable() is available).
 use msp430 as _;
 
-// Watchdog Timer Password / Hold.
-const WDTPW: u16 = 0x5A00;
-const WDTHOLD: u16 = 0x0080;
-
 /// Software tally of Timer0_A3 overflows (0xFFFF→0x0000 rollovers), maintained by
 /// the `TIMER0_A1` ISR and read by `now32` under the same critical section. A
 /// `Mutex<Cell<u16>>` because the value is shared between the ISR and `main`.
@@ -94,13 +90,8 @@ fn TIMER0_A1() {
 /// Firmware entry point.
 #[entry]
 fn main() -> ! {
-    // Stop the watchdog before anything else (default timeout ~32 ms, and
-    // Peripherals::take() enters a critical section).
-    unsafe {
-        (0x015C as *mut u16).write_volatile(WDTPW | WDTHOLD);
-    }
-
-    let p = hal::pac::Peripherals::take().unwrap();
+    // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
+    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
 
     // Performance profile: SMCLK = 8 MHz (counter ticks + UART BRCLK), MCLK = 1 MHz
     // (Delay). No crystal needed — this fixture is DCO-only.

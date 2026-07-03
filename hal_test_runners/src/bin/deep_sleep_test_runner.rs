@@ -80,10 +80,6 @@ use msp430 as _;
 /// active-mode probe can tell *when* the wake happened without sleeping.
 static WOKE: Mutex<Cell<bool>> = Mutex::new(Cell::new(false));
 
-// Watchdog Timer Password / Hold.
-const WDTPW: u16 = 0x5A00;
-const WDTHOLD: u16 = 0x0080;
-
 /// Scheduled wake interval, in ACLK ticks: 16384 / 32768 Hz = 0.5 s.
 const WAKE_TICKS: u16 = 16_384;
 
@@ -102,12 +98,8 @@ fn TIMER0_A0() {
 /// Firmware entry point.
 #[entry]
 fn main() -> ! {
-    // Stop the watchdog before anything else.
-    unsafe {
-        (0x015C as *mut u16).write_volatile(WDTPW | WDTHOLD);
-    }
-
-    let p = hal::pac::Peripherals::take().unwrap();
+    // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
+    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
 
     // Low-power profile: ACLK on the 32.768 kHz LFXT crystal, which keeps running
     // in LPM3 and clocks both the wake compare and the elapsed measurement.

@@ -6,10 +6,6 @@ use std::time::{Duration, Instant};
 use crate::deployment;
 use crate::serial::read_line;
 
-/// Default macOS device node for the eUSCI_A0 UART backchannel. Override with
-/// the `MSP430_UART_PORT` env var if the board enumerates differently.
-const DEFAULT_PORT: &str = "/dev/cu.usbmodem11203";
-
 /// The `spi_test_runner` fixture reports over the backchannel at the project's
 /// baseline 9600 8N1.
 const BAUD: u32 = 9600;
@@ -75,8 +71,7 @@ fn prompt_for_loopback_jumper() -> Result<(), Box<dyn Error>> {
 /// a body mismatch after BEGIN is a real failure: `SPI LOOPBACK FAIL` means the
 /// received pattern did not match the sent one (missing jumper or floating SOMI).
 fn verify_loopback_burst() -> Result<(), Box<dyn Error>> {
-    let port_path =
-        std::env::var("MSP430_UART_PORT").unwrap_or_else(|_| DEFAULT_PORT.to_string());
+    let port_path = crate::serial::resolve_port()?;
 
     println!("  opening {port_path} @ {BAUD} 8N1...");
     let mut port = serialport::new(&port_path, BAUD)

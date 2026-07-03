@@ -15,10 +15,6 @@ use msp430_rt::entry;
 // pac's Peripherals::take().
 use msp430 as _;
 
-// Watchdog Timer Password / Hold.
-const WDTPW: u16 = 0x5A00;
-const WDTHOLD: u16 = 0x0080;
-
 /// Firmware entry point.
 ///
 /// SPI loopback demo for the eUSCI_B0 driver. Jumper **P1.6 (SIMO) to P1.7
@@ -27,14 +23,8 @@ const WDTHOLD: u16 = 0x0080;
 /// floats and the check FAILs — connect it live and watch FAIL turn to PASS.
 #[entry]
 fn main() -> ! {
-    // Stop the watchdog before anything else (default timeout ~32 ms, and
-    // Peripherals::take() enters a critical section). Raw write — we don't hold
-    // the peripheral singletons yet.
-    unsafe {
-        (0x015C as *mut u16).write_volatile(WDTPW | WDTHOLD);
-    }
-
-    let p = hal::pac::Peripherals::take().unwrap();
+    // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
+    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
 
     // Performance clock profile: MCLK 1 MHz, SMCLK 8 MHz. SMCLK feeds both the
     // UART BRCLK and the SPI bit-rate generator below.

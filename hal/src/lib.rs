@@ -18,6 +18,40 @@ pub mod serial;
 pub mod spi;
 mod ticks;
 pub mod timer;
+pub mod watchdog;
+
+/// Boot front door: optionally stop the watchdog, then take the PAC
+/// peripherals — **in that order, guaranteed by construction**.
+///
+/// The two steps are order-sensitive: the watchdog powers up running as a
+/// ~32 ms fuse, and `Peripherals::take()` enters a critical section, so the
+/// stop must come first (see [`watchdog`]). Written as two statements in every
+/// binary, nothing stops a future `main` from swapping them; fused here, the
+/// ordering cannot be gotten wrong at a call site. Make this the first
+/// statement in `main`:
+///
+/// ```ignore
+/// #[entry]
+/// fn main() -> ! {
+///     let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+///     // ...
+/// }
+/// ```
+///
+/// The three policies (see [`watchdog::WdtMode`]): `Hold` stops the watchdog,
+/// `Arm { source, interval }` installs a fresh timeout so boot itself runs
+/// guarded, and `LeaveRunning` performs no `WDTCTL` write at all.
+///
+/// Returns what `Peripherals::take()` returns: `Some` on the first call,
+/// `None` after (the watchdog policy is still applied either way).
+pub fn init(wdt: watchdog::WdtMode) -> Option<pac::Peripherals> {
+    match wdt {
+        watchdog::WdtMode::Hold => watchdog::disable(),
+        watchdog::WdtMode::LeaveRunning => {}
+        watchdog::WdtMode::Arm { source, interval } => watchdog::arm(source, interval),
+    }
+    pac::Peripherals::take()
+}
 
 pub use embedded_hal;
 pub use embedded_hal_nb;
