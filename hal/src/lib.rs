@@ -45,6 +45,14 @@ pub mod watchdog;
 ///
 /// Returns what `Peripherals::take()` returns: `Some` on the first call,
 /// `None` after (the watchdog policy is still applied either way).
+///
+/// Gated on the `critical-section` feature for the same reason the PAC gates
+/// `Peripherals::take()` on it: `take()` only exists when a critical-section
+/// implementation is available (see the `msp430` crate's
+/// `critical-section-single-core`). Without the feature there is no safe
+/// `take` to fuse with, so there is no `init` either — use
+/// [`watchdog::disable`] and `Peripherals::steal()` manually in that world.
+#[cfg(feature = "critical-section")]
 pub fn init(wdt: watchdog::WdtMode) -> Option<pac::Peripherals> {
     match wdt {
         watchdog::WdtMode::Hold => watchdog::disable(),

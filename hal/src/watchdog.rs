@@ -212,6 +212,9 @@ pub fn disable() {
 /// Arm the watchdog with a fresh `source`/`interval` and a zeroed count, in
 /// one write. Backs [`crate::init`]'s [`WdtMode::Arm`]; the owned-peripheral
 /// path is [`Watchdog::start`], which does the identical write.
+// Sole caller is `init`, which is gated on `critical-section` — without that
+// feature this is (correctly) unreachable, not a bug.
+#[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 pub(crate) fn arm(source: ClockSource, interval: Interval) {
     write_ctl(cfg_bits(source, interval) | CNTCL);
 }
