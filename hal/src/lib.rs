@@ -16,6 +16,7 @@ pub mod pwm;
 pub mod rtc;
 pub mod serial;
 pub mod spi;
+pub mod sys;
 mod ticks;
 pub mod timer;
 pub mod watchdog;

@@ -220,9 +220,10 @@ pub(crate) fn arm(source: ClockSource, interval: Interval) {
 ///
 /// Writing `WDTCTL` without the `0x5A` key triggers an immediate PUC — the
 /// idiomatic MSP430 software reset (there is no ARM-style `SYSRESETREQ`).
-/// After the reboot, `SYSRSTIV` reads `0x16` (WDT password violation) so
+/// After the reboot, `SYSRSTIV` reads `0x18` (WDT password violation) so
 /// startup code can tell this reset apart from a power-on or a genuine
-/// watchdog timeout (`0x0A`).
+/// watchdog timeout (`0x16`) — see [`crate::sys::ResetReasons`] for the
+/// decoded view.
 pub fn force_reset() -> ! {
     let wdt = unsafe { pac::WatchdogTimer::steal() };
     // Key byte 0x00 ≠ 0x5A → PUC on this very write.
