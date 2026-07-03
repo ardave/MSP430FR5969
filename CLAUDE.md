@@ -24,18 +24,20 @@ cargo +nightly build
 cargo +nightly check
 
 # Run the host-side math tests (NOT on the msp430 target)
-cd baud-test && cargo +nightly test    # UART baud-rate math
-cd timer-test && cargo +nightly test   # timer tick<->time math
+cd baud-test && cargo +nightly test     # UART baud-rate math
+cd timer-test && cargo +nightly test    # timer tick<->time math
+cd adc-cal-test && cargo +nightly test  # ADC calibration/scaling math
 ```
 
 Requires the **nightly** Rust toolchain (for `-Z build-std=core` on the `msp430-none-elf` target). The TI MSP430 GCC toolchain must be installed — the linker path is hardcoded in `.cargo/config.toml`.
 
 ## Testing
 
-Most firmware can only be validated on hardware, but pure logic is tested on the host. The pattern: keep the pure arithmetic in a dependency-free file (no PAC/HAL types, `//` not `//!` comments so it can be `include!`d mid-crate), and have a **detached test crate** (its own `[workspace]` table + `.cargo/config.toml` overriding the target back to the host triple `aarch64-apple-darwin`, with `build-std = ["std"]` to neutralize the inherited `build-std = ["core"]`) `include!` that real source. Because the test includes the actual shipping source, a bad edit to the math fails the tests. Two such crates exist:
+Most firmware can only be validated on hardware, but pure logic is tested on the host. The pattern: keep the pure arithmetic in a dependency-free file (no PAC/HAL types, `//` not `//!` comments so it can be `include!`d mid-crate), and have a **detached test crate** (its own `[workspace]` table + `.cargo/config.toml` overriding the target back to the host triple `aarch64-apple-darwin`, with `build-std = ["std"]` to neutralize the inherited `build-std = ["core"]`) `include!` that real source. Because the test includes the actual shipping source, a bad edit to the math fails the tests. Three such crates exist:
 
 - `baud-test/` includes `hal/src/baud.rs` and checks `compute_baud`/`ucbrs_lookup` against SLAU367P Table 30-5. The pass/fail criterion is the resulting average bit-timing error (< 2%), since the driver follows the datasheet *procedure* while Table 30-5 lists values from a separate lowest-error search — the two legitimately differ in some rows (mode choice near N≈16, and alternate `UCBRSx` bytes).
 - `timer-test/` includes `hal/src/ticks.rs` (the tick↔time math `Counter` delegates to: `ticks_to_us`/`ticks_to_ns`/`assemble_now64`) and checks exact conversions, the `u64`-widening overflow guard, and the `now64` bit-packing.
+- `adc-cal-test/` includes `hal/src/adc_cal.rs` (the math `tlv::AdcCal`/`tlv::RefCal`/`Adc::to_millivolts` delegate to) and checks the SLAU367 temperature interpolation (30/85 °C TLV points, deci-°C, half-away-from-zero rounding), the 1.15 fixed-point gain/offset/REF corrections (unity identity, clamping), and count→mV rounding.
 
 Run with `cd <crate> && cargo +nightly test`. The host triple in each `.cargo/config.toml` is `aarch64-apple-darwin`; change it for other hosts.
 
@@ -49,21 +51,24 @@ The `hal_test_runners` demos that exercise eUSCI_B0 each need specific board wir
 
 - **BME280 I2C validation:** wire VCC→3V3, GND→GND, SDA→P1.6, SCL→P1.7 (jumper removed, pull-ups present). The BME280 answers at **0x76** (SDO low) or **0x77** (SDO high) — the scanner catches either. Beyond the address probe, the chip-ID register is the natural `write_read` correctness check: `i2c.write_read(addr, &[0xD0], &mut id)` should return **0x60** (BME280's fixed ID), exercising the write→repeated-START→read path that the scanner alone does not.
 
-The next two demos use **different peripherals than eUSCI_B0**, so they need no bus wiring and do not conflict with the SPI/I2C demos (they can be flashed independently):
+The remaining demos use **different peripherals than eUSCI_B0**, so they need no bus wiring and do not conflict with the SPI/I2C demos (they can be flashed independently):
 
 - **Timer_B0 PWM (`--bin pwm_fade`, `src/bin/pwm_fade.rs`):** drives ~1 kHz PWM on **TB0.1 = P1.4** and ramps duty 0→100→0 %. Put an **LED + ~330 Ω from P1.4 to GND** (or a scope on P1.4) to see it breathe; the UART prints `duty: N%` and the on-board LEDs show ramp direction (GREEN up, RED down). The driver picks `TB0.n` outputs with **`SEL0=1, SEL1=0`** (secondary function) via `gpio::Pin::into_timer_b_output`; only P1.4(TB0.1)/P1.5(TB0.2)/P1.6(TB0.3)/P1.7(TB0.4) implement `pwm::PwmPin`. **TB0.0 is the period (`TB0CCR0`), not a usable output**; P1.6/P1.7 collide with eUSCI_B0, so the typestate makes PWM-vs-SPI/I2C on those pins an exclusive choice. Clean rails: 0 % parks the pin low and 100 % high via `OUTMOD=0` (no glitch), everything between uses `OUTMOD=7` Reset/Set.
 
 - **RTC_B calendar (`--bin rtc_clock`, `src/bin/rtc_clock.rs`):** prints `YYYY-MM-DD HH:MM:SS` once per second and blinks GREEN. **Requires the 32.768 kHz LFXT crystal** — the RTC "is clocked by XT1" (datasheet), so the demo uses `clocks::configure_low_power` to start LFXT, and `rtc::Rtc::new` **returns `Error::ClockNot32768` unless `clocks.aclk() == 32768`** (lights RED + prints a refusal). The LaunchPad populates the crystal, so it should run crystal-accurate (check for drift against a watch over a minute). Reads go through `now()`, which gates on **`RTCRDY`** to avoid a torn read across the 1 Hz update. Binary mode (`RTCBCD=0`) so `DateTime` fields are plain integers; the single `RTC` interrupt vector (sources demuxed via `RTCIV`, see `rtc::read_iv`) is available via `enable_event_interrupt`/`enable_second_interrupt` but the demo polls.
 
+- **REF_A calibrated temperature & supply (`--bin ref_temp_test_runner`):** **no wiring at all.** Brings the shared reference up at **2.0 V** (one setting serves both measurements: the temp sensor fits under any reference, but AVCC/2 ≈ 1.65 V would clip against 1.2 V) and prints the die temperature in °C — interpolated between the factory 30/85 °C TLV points — plus AVCC in mV via the (AVCC–AVSS)/2 monitor through the full gain→offset→REF-factor calibration chain. Expect a few °C above ambient (die self-heating) and ≈3300 mV on USB power; GREEN while the on-device plausibility windows (5–60 °C, 2900–3600 mV) and the TLV lookup pass, RED otherwise. Complements `--bin adc_internal_test_runner`, which deliberately leaves REF_A **off** and asserts the temp sensor reads ~0 (the sensor is biased by REF_A, not the ADC).
+
 ## Architecture
 
 **Workspace layout:**
 - `pac/` — Peripheral Access Crate auto-generated by `svd2rust` from `msp430fr5969.svd`. Provides typed register access for all MSP430FR5969 peripherals. This is a ~71K-line generated file — do not manually edit `pac/src/lib.rs`. Owns `memory.x` (MSP430FR5969 memory map) and `device.x` (interrupt vector defaults); both are copied to the linker search path by `build.rs` when the `rt` feature is enabled.
-- `hal/` — Hardware Abstraction Layer crate built on top of the PAC. Re-exports `pac`, `embedded_hal`, `embedded_hal_nb`, `embedded_io`, and `embedded_storage`. Passes through `rt` and `critical-section` features to the PAC. Modules: `gpio` (typed pins, `embedded-hal` digital traits), `serial` (eUSCI_A UART, `embedded-hal-nb` + `embedded-io`), `spi`/`i2c` (eUSCI_B0, `embedded-hal` SPI/I2C), `adc` (ADC12_B), `clocks`, `delay`, `timer` (Timer_A free-running counter), `power` (LPMx), `fram` (`embedded-storage`), `pwm` (Timer_B0 PWM, `embedded_hal::pwm::SetDutyCycle`), `rtc` (RTC_B calendar; native API — embedded-hal has no RTC trait), and `watchdog` (WDT_A: pre-`take()` `disable()` free function, `Watchdog` start/feed/stop, `force_reset()` software reset; native API — embedded-hal 1.0 dropped the watchdog traits). The crate-root `hal::init(watchdog::WdtMode)` is the boot front door: watchdog policy (`Hold` / `LeaveRunning` / `Arm { source, interval }` to run boot under a chosen timeout) + `Peripherals::take()` fused in guaranteed order.
+- `hal/` — Hardware Abstraction Layer crate built on top of the PAC. Re-exports `pac`, `embedded_hal`, `embedded_hal_nb`, `embedded_io`, and `embedded_storage`. Passes through `rt` and `critical-section` features to the PAC. Modules: `gpio` (typed pins, `embedded-hal` digital traits), `serial` (eUSCI_A UART, `embedded-hal-nb` + `embedded-io`), `spi`/`i2c` (eUSCI_B0, `embedded-hal` SPI/I2C), `adc` (ADC12_B; ratiometric AVCC-referenced reads plus absolute VREF-referenced reads that take `&ref_a::Ref`), `ref_a` (REF_A shared 1.2/2.0/2.5 V reference; also powers the on-die temperature sensor), `tlv` (factory ADC/REF calibration constants from the 0x1A00 device-descriptor table), `clocks`, `delay`, `timer` (Timer_A free-running counter), `power` (LPMx), `fram` (`embedded-storage`), `pwm` (Timer_B0 PWM, `embedded_hal::pwm::SetDutyCycle`), `rtc` (RTC_B calendar; native API — embedded-hal has no RTC trait), and `watchdog` (WDT_A: pre-`take()` `disable()` free function, `Watchdog` start/feed/stop, `force_reset()` software reset; native API — embedded-hal 1.0 dropped the watchdog traits). The crate-root `hal::init(watchdog::WdtMode)` is the boot front door: watchdog policy (`Hold` / `LeaveRunning` / `Arm { source, interval }` to run boot under a chosen timeout) + `Peripherals::take()` fused in guaranteed order.
 - `pac_consumer/` — Test/experimentation binary that exercises the PAC directly. Entry point is `_start()` in `src/main.rs`.
 - `hal_test_runners/` — Test/experimentation binary that exercises the HAL. Minimal `_start()` entry point.
 - `baud-test/` — Host-target unit tests for the UART baud-rate math (see Testing below). Not part of the workspace.
 - `timer-test/` — Host-target unit tests for the timer tick↔time math (`hal/src/ticks.rs`). Not part of the workspace.
+- `adc-cal-test/` — Host-target unit tests for the ADC calibration/scaling math (`hal/src/adc_cal.rs`). Not part of the workspace.
 
 **Key configuration:**
 - `.cargo/config.toml` — Sets `msp430-none-elf` target, enables `build-std = ["core"]`, configures TI GCC linker and `mspdebug tilib` as the runner.

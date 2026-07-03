@@ -19,10 +19,12 @@
 //!   mV)** regardless of the actual supply. That fixed, predictable value is the
 //!   point: it confirms the ADC converts correctly with nothing connected. The
 //!   reading is self-checked against a ±10% window of half-scale on-device.
-//! - **Temperature sensor (raw).** Reads **~0** on this driver — the sensor is
-//!   part of the REF_A module and is unpowered unless `REFON` is set, which we
-//!   do not do (no REF_A support yet). It will come alive once REF_A is brought
-//!   up. (Verified on hardware 2026-06-27.)
+//! - **Temperature sensor (raw).** Reads **~0** here — the sensor is part of
+//!   the REF_A module and is unpowered unless `REFON` is set, which this
+//!   fixture *deliberately never does*: the near-zero reading proves both that
+//!   the ADC reports a dead channel honestly and that nothing brings REF_A up
+//!   behind our back. (Verified on hardware 2026-06-27.) The powered, calibrated
+//!   counterpart is the `ref_temp_test_runner` fixture.
 //!
 //! # Framed output for the host runner
 //!
