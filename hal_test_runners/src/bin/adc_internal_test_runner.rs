@@ -15,10 +15,11 @@
 //! # What it measures and what to expect
 //!
 //! - **(AVCC–AVSS)/2 supply monitor.** Measured against the AVCC reference this
-//!   is ratiometric, so it must read ≈ **half full-scale (~2048 counts, ~1650
-//!   mV)** regardless of the actual supply. That fixed, predictable value is the
-//!   point: it confirms the ADC converts correctly with nothing connected. The
-//!   reading is self-checked against a ±10% window of half-scale on-device.
+//!   is ratiometric, so it must read ≈ **half full-scale (~2048 counts)**
+//!   regardless of the actual supply (which is ~3.6 V on this LaunchPad — see
+//!   `ref_temp_test_runner`). That fixed, predictable value is the point: it
+//!   confirms the ADC converts correctly with nothing connected. The reading is
+//!   self-checked against a ±10% window of half-scale on-device.
 //! - **Temperature sensor (raw).** Reads **~0** here — the sensor is part of
 //!   the REF_A module and is unpowered unless `REFON` is set, which this
 //!   fixture *deliberately never does*: the near-zero reading proves both that
@@ -58,8 +59,11 @@ use msp430_rt::entry;
 // pac's Peripherals::take().
 use msp430 as _;
 
-// AVCC in millivolts — the ADC reference (VRSEL = 0), used to scale counts.
-const AVCC_MV: u32 = 3300;
+// AVCC in millivolts — the ADC reference (VRSEL = 0), used to scale counts on
+// the human info line only (the self-check verdict is ratiometric and does not
+// depend on this). ~3.6 V on this LaunchPad: the eZ-FET LDO feeds the rail
+// 3.6 V, not 3.3 V — measured 2026-07-03 via REF_A (`ref_temp_test_runner`).
+const AVCC_MV: u32 = 3630;
 
 // Half-scale at 12-bit, and a ±10% acceptance window for the supply self-check.
 const HALF_SCALE: u16 = 2048;

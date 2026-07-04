@@ -33,9 +33,10 @@ fn test_calibrated_temperature_and_supply() -> Result<(), Box<dyn Error>> {
 ///
 /// The fixture emits an `OK` verdict line per check, framed by BEGIN/END
 /// markers. A missing TLV table, an implausible temperature (outside 5–60 °C)
-/// or supply (outside 2900–3600 mV) flips the corresponding line to
-/// `MISSING`/`FAIL`, so a body mismatch after BEGIN is a real failure (the
-/// fixture always emits the complete burst).
+/// or supply (outside 2900–3700 mV — this LaunchPad's eZ-FET rail is ~3.6 V,
+/// not 3.3 V) flips the corresponding line to `MISSING`/`FAIL`, so a body
+/// mismatch after BEGIN is a real failure (the fixture always emits the
+/// complete burst).
 fn verify_self_check_burst() -> Result<(), Box<dyn Error>> {
     let port_path = crate::serial::resolve_port()?;
 
