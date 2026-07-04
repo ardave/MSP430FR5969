@@ -52,7 +52,9 @@ const MCTLW: usize = 0x08; // Modulation control (UCBRSx, UCBRFx, UCOS16)
 const STATW: usize = 0x0A; // Status (error flags, UCBUSY)
 const RXBUF: usize = 0x0C; // Receive buffer
 const TXBUF: usize = 0x0E; // Transmit buffer
+const IE: usize = 0x1A; // Interrupt enables (UCTXIE, UCRXIE)
 const IFG: usize = 0x1C; // Interrupt flags (UCTXIFG, UCRXIFG)
+const IV: usize = 0x1E; // Interrupt vector (read clears the reported source)
 
 // CTLW0 bit fields
 const UCSWRST: u16 = 1 << 0; // Software reset (hold module in reset while = 1)
@@ -72,6 +74,9 @@ const UCBRK: u16 = 1 << 3; // Break detected
 const UCPE: u16 = 1 << 4; // Parity error
 const UCOE: u16 = 1 << 5; // Overrun error
 const UCFE: u16 = 1 << 6; // Framing error
+
+// IE bit fields
+const UCRXIE: u16 = 1 << 0; // Receive interrupt enable
 
 // IFG bit fields
 const UCRXIFG: u16 = 1 << 0; // Receive buffer full
@@ -366,6 +371,63 @@ impl<USCI: Instance> Serial<USCI> {
             },
         )
     }
+}
+
+// ---------------------------------------------------------------------------
+// RX interrupt
+// ---------------------------------------------------------------------------
+//
+// With `UCRXIE` set, a received byte fires the `USCI_A0`/`USCI_A1` vector.
+// The division of labor follows the project's `OVERFLOWS` precedent: the HAL
+// owns no hidden buffer — the application's ISR calls [`isr_read_byte`] and
+// pushes into its own queue (see `hal::rx_queue::RxQueue`), and thread-mode
+// code drains that queue. While the interrupt is enabled the ISR is the
+// consumer of RXBUF, so `Rx::read`/`try_read_byte` in thread mode will simply
+// see `WouldBlock` — the polling path still works whenever the interrupt is
+// left off.
+
+#[cfg(feature = "critical-section")]
+impl<USCI: Instance> Rx<USCI> {
+    /// Set `UCRXIE`: from now on (once GIE is up) each received byte fires
+    /// the eUSCI's shared vector, and the ISR — not thread-mode `read` — must
+    /// consume `RXBUF` via [`isr_read_byte`].
+    ///
+    /// `UCAxIE` is shared with the (future) `UCTXIE` bit, so the RMW runs
+    /// under `critical_section::with` per the shared-IE-register rule.
+    pub fn enable_rx_interrupt(&mut self) {
+        critical_section::with(|_| unsafe {
+            let addr = USCI::BASE + IE;
+            write_reg(addr, read_reg(addr) | UCRXIE);
+        });
+    }
+
+    /// Clear `UCRXIE`, returning RX to pure polling. A byte already latched
+    /// in `RXBUF` stays readable via the normal `read` path.
+    pub fn disable_rx_interrupt(&mut self) {
+        critical_section::with(|_| unsafe {
+            let addr = USCI::BASE + IE;
+            write_reg(addr, read_reg(addr) & !UCRXIE);
+        });
+    }
+}
+
+/// ISR-side: read `UCAxIV` — 0 = nothing, 0x02 = RX (`UCRXIFG`), 0x04 = TX
+/// (`UCTXIFG`); reading clears the reported flag *except* RX, where reading
+/// `RXBUF` (i.e. [`isr_read_byte`]) is what clears it.
+///
+/// A single-source handler (only `UCRXIE` enabled) can skip this and go
+/// straight to [`isr_read_byte`]; it exists for when TX/error sources join.
+pub fn read_iv<USCI: Instance>() -> u16 {
+    unsafe { read_reg(USCI::BASE + IV) }
+}
+
+/// ISR-side: consume one received byte — status checked *before* `RXBUF`
+/// (the `RXBUF` read clears the error flags along with `UCRXIFG`), same
+/// decode as the thread-mode read path. `Err(WouldBlock)` on a spurious call
+/// with nothing latched; `Err(Other)` reports a framing/parity/overrun/break
+/// error (the corrupt byte is consumed to clear the flags).
+pub fn isr_read_byte<USCI: Instance>() -> nb::Result<u8, Error> {
+    try_read_byte::<USCI>()
 }
 
 /// Extension trait to turn a PAC eUSCI_A UART peripheral into a [`Serial`].

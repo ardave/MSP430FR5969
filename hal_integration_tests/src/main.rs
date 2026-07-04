@@ -4,6 +4,7 @@ mod deployment;
 mod serial;
 
 mod serial_port_tests;
+mod serial_irq_tests;
 mod gpio_tests;
 mod timer_tests;
 mod delay_tests;
@@ -22,6 +23,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Starting Tests");
 
     serial_port_tests::run()?;
+    serial_irq_tests::run()?;
     adc_tests::run()?;
     adc_irq_tests::run()?;
     ref_a_tests::run()?;
