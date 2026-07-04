@@ -56,6 +56,7 @@ checksum = "a21dea9854beb860f3062d10228ce9b976da520a73474aed3171ec276bc0c032"
 name = "hal"
 version = "0.1.0"
 dependencies = [
+ "critical-section",
  "embedded-hal",
  "embedded-hal-nb",
  "embedded-io",

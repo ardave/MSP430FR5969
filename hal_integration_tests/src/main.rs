@@ -4,6 +4,7 @@ mod deployment;
 mod serial;
 
 mod serial_port_tests;
+mod gpio_tests;
 mod timer_tests;
 mod delay_tests;
 mod deep_sleep_tests;
@@ -24,6 +25,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     fram_tests::run()?;
     rtc_tests::run()?;
     watchdog_tests::run()?;
+    gpio_tests::run()?;
     timer_tests::run()?;
     delay_tests::run()?;
     deep_sleep_tests::run()?;

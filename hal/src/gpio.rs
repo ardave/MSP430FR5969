@@ -56,10 +56,13 @@ pub struct P4;
 // Register address mapping
 // ---------------------------------------------------------------------------
 
-/// Maps a port marker to the absolute addresses of its 8-bit GPIO registers.
+/// Maps a port marker to the absolute addresses of its 8-bit GPIO registers
+/// (plus the 16-bit `PxIV` interrupt-vector register).
 ///
 /// Port 1/2 share `PORT_1_2` (base 0x0200) with odd/even byte interleaving;
-/// Port 3/4 share `PORT_3_4` (base 0x0220) the same way.
+/// Port 3/4 share `PORT_3_4` (base 0x0220) the same way. The one exception to
+/// the interleave is `PxIV`: it is a 16-bit register, so the pair sits at the
+/// two even word addresses 0x0E and 0x1E off the block base.
 pub trait PortRegs {
     const IN: usize;
     const OUT: usize;
@@ -67,6 +70,18 @@ pub trait PortRegs {
     const REN: usize;
     const SEL0: usize;
     const SEL1: usize;
+    /// Interrupt edge select: 0 = rising (low→high), 1 = falling (high→low).
+    const IES: usize;
+    /// Interrupt enable per pin.
+    const IE: usize;
+    /// Interrupt flags. Latched on the selected edge — asynchronously, with no
+    /// clock required, which is why a port interrupt wakes even LPM4. Also
+    /// software-settable: setting a bit fires the vector exactly like an edge.
+    const IFG: usize;
+    /// Interrupt vector (16-bit, even address). Reading returns 2·(pin+1) for
+    /// the highest-priority pending enabled pin (0 if none) and atomically
+    /// clears that pin's IFG bit.
+    const IV: usize;
 }
 
 impl PortRegs for P1 {
@@ -76,6 +91,10 @@ impl PortRegs for P1 {
     const REN: usize = 0x0206;
     const SEL0: usize = 0x020A;
     const SEL1: usize = 0x020C;
+    const IES: usize = 0x0218;
+    const IE: usize = 0x021A;
+    const IFG: usize = 0x021C;
+    const IV: usize = 0x020E;
 }
 
 impl PortRegs for P2 {
@@ -85,6 +104,10 @@ impl PortRegs for P2 {
     const REN: usize = 0x0207;
     const SEL0: usize = 0x020B;
     const SEL1: usize = 0x020D;
+    const IES: usize = 0x0219;
+    const IE: usize = 0x021B;
+    const IFG: usize = 0x021D;
+    const IV: usize = 0x021E;
 }
 
 impl PortRegs for P3 {
@@ -94,6 +117,10 @@ impl PortRegs for P3 {
     const REN: usize = 0x0226;
     const SEL0: usize = 0x022A;
     const SEL1: usize = 0x022C;
+    const IES: usize = 0x0238;
+    const IE: usize = 0x023A;
+    const IFG: usize = 0x023C;
+    const IV: usize = 0x022E;
 }
 
 impl PortRegs for P4 {
@@ -103,6 +130,10 @@ impl PortRegs for P4 {
     const REN: usize = 0x0227;
     const SEL0: usize = 0x022B;
     const SEL1: usize = 0x022D;
+    const IES: usize = 0x0239;
+    const IE: usize = 0x023B;
+    const IFG: usize = 0x023D;
+    const IV: usize = 0x023E;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,6 +311,101 @@ impl<PORT: PortRegs, const N: u8, PULL> InputPin for Pin<PORT, N, Input<PULL>> {
     fn is_low(&mut self) -> Result<bool, Self::Error> {
         Ok(!unsafe { read_bit(PORT::IN, N) })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Port interrupts
+// ---------------------------------------------------------------------------
+//
+// Every FR5969 port pin can latch an edge into PxIFG and fire its port's
+// shared vector (PORT1..PORT4 in `pac::Interrupt`). The latch is asynchronous
+// — no clock involved — so a port interrupt wakes the CPU from *any* LPM,
+// including LPM4 where even the crystal is stopped.
+//
+// PxIE/PxIES/PxIFG are shared 8-bit registers RMW'd per pin, so every
+// enable/disable/clear below runs inside `critical_section::with`: without it
+// a thread-mode read-modify-write racing an ISR touching a sibling bit could
+// lose the ISR's update. (A critical section cannot protect against *hardware*
+// setting another pin's IFG bit mid-RMW — that is why the ISR-side consumer of
+// choice is `read_iv`, whose read-and-clear is atomic in silicon.)
+
+/// Which input transition latches `PxIFG` and fires the port vector.
+pub enum Edge {
+    /// Low → high.
+    Rising,
+    /// High → low. What a grounded button with a pull-up produces on press.
+    Falling,
+}
+
+#[cfg(feature = "critical-section")]
+impl<PORT: PortRegs, const N: u8, PULL> Pin<PORT, N, Input<PULL>> {
+    /// Arm this pin's edge interrupt: program the edge, clear any stale flag,
+    /// then set `PxIE`.
+    ///
+    /// The mid-sequence flag clear is not optional: per SLAU367, writing
+    /// `PxIES` can itself latch a spurious `PxIFG`, so enabling without
+    /// clearing may fire the vector immediately on an edge that never
+    /// happened. Nothing fires until GIE is also set
+    /// (`msp430::interrupt::enable()` or one of the `power::enter_lpm*`
+    /// entries, which set it atomically with sleeping).
+    pub fn enable_interrupt(&mut self, edge: Edge) {
+        critical_section::with(|_| unsafe {
+            match edge {
+                Edge::Rising => clear_bit(PORT::IES, N),
+                Edge::Falling => set_bit(PORT::IES, N),
+            }
+            clear_bit(PORT::IFG, N);
+            set_bit(PORT::IE, N);
+        });
+    }
+
+    /// Disarm this pin's interrupt (clears `PxIE`; a latched `PxIFG` stays
+    /// pending and would fire on re-enable — clear it first if that's stale).
+    pub fn disable_interrupt(&mut self) {
+        critical_section::with(|_| unsafe { clear_bit(PORT::IE, N) });
+    }
+
+    /// Is this pin's `PxIFG` flag latched?
+    pub fn interrupt_pending(&self) -> bool {
+        unsafe { read_bit(PORT::IFG, N) }
+    }
+
+    /// Clear this pin's `PxIFG` flag.
+    pub fn clear_interrupt_pending(&mut self) {
+        critical_section::with(|_| unsafe { clear_bit(PORT::IFG, N) });
+    }
+
+    /// Latch this pin's `PxIFG` flag from software.
+    ///
+    /// The port logic treats a software-set flag exactly like a pin edge: if
+    /// `PxIE` and GIE are set, the port vector fires. Useful to self-test an
+    /// ISR path without touching the pin, or to "kick" a handler.
+    pub fn set_interrupt_pending(&mut self) {
+        critical_section::with(|_| unsafe { set_bit(PORT::IFG, N) });
+    }
+}
+
+/// ISR-side: read the port's `PxIV`.
+///
+/// Returns 2·(pin+1) for the highest-priority pending *enabled* pin (pin 0 →
+/// 0x02 … pin 7 → 0x10), or 0 if none, and atomically clears that pin's
+/// `PxIFG` bit in the same read — the race-free way to consume port events.
+/// Call in a loop until 0 to drain multiple simultaneous edges. Safe from the
+/// `PORT1..PORT4` ISRs and from thread mode alike (the read-and-clear is a
+/// single bus access).
+pub fn read_iv<PORT: PortRegs>() -> u16 {
+    unsafe { (PORT::IV as *const u16).read_volatile() }
+}
+
+/// ISR-side: clear one pin's `PxIFG` bit without going through `PxIV`.
+///
+/// Prefer [`read_iv`] — its clear is atomic in silicon. This RMW fallback is
+/// for handlers that already know the source; the critical section excludes
+/// software races, but an edge landing on a *different* pin of the same port
+/// during the RMW can still be lost (inherent to writing `PxIFG`).
+#[cfg(feature = "critical-section")]
+pub fn clear_irq<PORT: PortRegs>(pin: u8) {
+    critical_section::with(|_| unsafe { clear_bit(PORT::IFG, pin) });
 }
 
 impl<PORT: PortRegs, const N: u8> OutputPin for Pin<PORT, N, Output> {

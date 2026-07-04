@@ -14,8 +14,11 @@
 //! **LPM3** sets CPUOFF + SCG0 + SCG1 but leaves **OSCOFF = 0**, so the 32.768 kHz
 //! crystal (and an ACLK-clocked timer) keeps running while MCLK, SMCLK, and the
 //! DCO are all gated. That is what lets a timer measure time, and wake the part,
-//! through deep sleep — at microamp power. (LPM4 additionally sets OSCOFF, which
-//! stops the crystal, so a timer cannot run there.)
+//! through deep sleep — at microamp power. **LPM4** additionally sets OSCOFF,
+//! stopping the crystal too: no clock runs at all, so no timer can wake it —
+//! only *asynchronous* events can. Port-pin edge interrupts are exactly that
+//! (`PxIFG` latches without a clock), which is why "sleep until a button" is
+//! the canonical LPM4 pattern; see [`crate::gpio`]'s interrupt support.
 
 /// Enter **LPM3** with interrupts enabled, and return once an interrupt has
 /// woken the CPU.
@@ -43,6 +46,31 @@ pub fn enter_lpm3() {
             "bis #{bits}, r2",
             "nop",
             bits = const LPM3_GIE,
+            options(nomem, nostack),
+        );
+    }
+}
+
+/// Enter **LPM4** with interrupts enabled, and return once an interrupt has
+/// woken the CPU.
+///
+/// LPM4 is LPM3 plus OSCOFF: every clock on the part stops, including LFXT.
+/// Nothing scheduled can wake it — only asynchronous events (a port-pin edge
+/// latching `PxIFG`, or RST/NMI) do, so arm a [`crate::gpio`] pin interrupt
+/// *before* calling this or the part sleeps until reset. The same atomic
+/// GIE+sleep `bis` and the same `#[interrupt(wake_cpu)]` requirement as
+/// [`enter_lpm3`] apply.
+#[inline]
+pub fn enter_lpm4() {
+    // GIE(3) | CPUOFF(4) | OSCOFF(5) | SCG0(6) | SCG1(7) = 0xF8.
+    const LPM4_GIE: u16 = (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7);
+    // SAFETY: writing SR to enter a low-power mode; no memory or stack effects.
+    // Immediate addressing (`#`) is load-bearing — see `enter_lpm3`.
+    unsafe {
+        core::arch::asm!(
+            "bis #{bits}, r2",
+            "nop",
+            bits = const LPM4_GIE,
             options(nomem, nostack),
         );
     }
