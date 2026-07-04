@@ -16,6 +16,7 @@ pub mod power;
 pub mod pwm;
 pub mod ref_a;
 pub mod rtc;
+pub mod rx_queue;
 pub mod serial;
 pub mod spi;
 pub mod sys;

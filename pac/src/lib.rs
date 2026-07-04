@@ -3,6 +3,10 @@
 #![allow(non_snake_case)]
 #![no_std]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+// Hand-patch (see the Vector union below): the interrupt handler declarations
+// use the "msp430-interrupt" ABI, which is nightly-gated in the crate that
+// names it. Nightly is already mandatory for this project (build-std).
+#![cfg_attr(feature = "rt", feature(abi_msp430_interrupt))]
 #[allow(unused_imports)]
 use generic::*;
 #[doc = r"Common register and bit access and modify traits"]
@@ -874,7 +878,13 @@ pub mod generic {
     }
 }
 #[cfg(feature = "rt")]
-extern "C" {
+// "msp430-interrupt", not the svd2rust-emitted "C": handlers return with RETI,
+// not RET, and msp430-rt's #[interrupt] macro defines them with this ABI. The
+// linker matches by symbol name so the mismatch was harmless, but the declared
+// type was a lie. Second deliberate manual edit to this generated file (with
+// the Vector union's u16 below); both are lost on regeneration — regenerate
+// with the msp430 flavor of svd2rust, which emits both correctly.
+extern "msp430-interrupt" {
     fn AES256();
     fn RTC();
     fn PORT4();
@@ -901,10 +911,15 @@ extern "C" {
     fn UNMI();
     fn SYSNMI();
 }
+// cfg(rt) is part of the same hand-patch: only the rt build enables the
+// abi_msp430_interrupt feature the _handler type now needs, and Vector's only
+// user (__INTERRUPTS) is rt-gated anyway.
+#[cfg(feature = "rt")]
 #[doc(hidden)]
 #[repr(C)]
 pub union Vector {
-    _handler: unsafe extern "C" fn(),
+    // "msp430-interrupt", matching the extern block above (same hand-patch).
+    _handler: unsafe extern "msp430-interrupt" fn(),
     // u16, not the svd2rust-emitted u32: an msp430 vector slot is a single
     // 16-bit word. With u32 each entry is 4 bytes, doubling the table width so
     // it overruns the VECTORS region (and would place handlers at the wrong

@@ -17,4 +17,5 @@
 mod adc_cal;
 mod baud;
 mod fram_addr;
+mod rx_queue;
 mod ticks;

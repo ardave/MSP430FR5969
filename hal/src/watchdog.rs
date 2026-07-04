@@ -79,11 +79,27 @@
 //! }
 //! ```
 //!
-//! (WDT_A also has an *interval timer* mode — `WDTTMSEL = 1` turns the reset
-//! into a plain periodic interrupt. This driver doesn't expose it: the project
-//! already has better periodic-tick hardware in [`crate::timer`], and wiring
-//! the WDT interrupt means touching the shared `SFRIE1` register. Revisit if a
-//! use appears.)
+//! # Interval-timer mode
+//!
+//! WDT_A has a second personality: `WDTTMSEL = 1` turns the reset into a plain
+//! periodic interrupt — the counter still counts 2^N cycles and still sets
+//! `WDTIFG` on expiry, but instead of a PUC the chip gets the `WDT` vector
+//! (once `SFRIE1.WDTIE` and GIE are set). [`Watchdog::start_interval`] arms
+//! it; the same [`Interval`] table above gives the tick period. It's a
+//! serviceable coarse periodic tick when the Timer_A/B blocks are busy doing
+//! real work — but note it *replaces* the guard role: one WDT_A, one mode.
+//!
+//! ## The shared-`SFRIE1` rule
+//!
+//! `WDTIE` does not live in a watchdog register — it lives in `SFRIE1`, the
+//! chip-global special-function interrupt-enable register, next to unrelated
+//! bits like `NMIIE` and `VMAIE` that other code may someday own. So no
+//! driver *owns* `pac::Sfr`; the convention (this module is its first user)
+//! is: touch `SFRIE1`/`SFRIFG1` only via `pac::Sfr::steal()`, only with
+//! bit-field `modify`, and only inside `critical_section::with` from thread
+//! mode. The critical section closes the read-modify-write race between two
+//! thread-mode users and against ISRs; ISRs themselves must not modify
+//! `SFRIE1` under this convention, so the CS suffices.
 
 use crate::pac;
 
@@ -93,6 +109,9 @@ const PASSWORD: u16 = 0x5A00;
 
 /// `WDTHOLD` (bit 7): 1 = watchdog stopped.
 const HOLD: u16 = 0x0080;
+/// `WDTTMSEL` (bit 4): 1 = interval-timer mode (expiry sets `WDTIFG` and
+/// fires the `WDT` vector instead of resetting the chip).
+const TMSEL: u16 = 0x0010;
 /// `WDTCNTCL` (bit 3): writing 1 zeroes the count (self-clearing).
 const CNTCL: u16 = 0x0008;
 
@@ -268,6 +287,23 @@ impl Watchdog {
         write_ctl(cfg_bits(source, interval) | CNTCL);
     }
 
+    /// Arm **interval-timer mode**: select `source` and `interval`, set
+    /// `WDTTMSEL`, zero the count, and release the hold — one write. From now
+    /// on each expiry sets `WDTIFG` and (with [`enable_interval_interrupt`]
+    /// (Watchdog::enable_interval_interrupt) + GIE) fires the `WDT` vector;
+    /// **no reset is ever generated in this mode**, so the guard role is off.
+    ///
+    /// [`feed`](Watchdog::feed) restarts the current interval (the config
+    /// read-back keeps `WDTTMSEL`) and [`stop`](Watchdog::stop) pauses it,
+    /// unchanged. Same LPM caveat as watchdog mode: an SMCLK-sourced interval
+    /// freezes in LPM3+ — clock a sleepy tick from ACLK or VLOCLK.
+    ///
+    /// Pick intervals with the module-docs table in hand: at SMCLK = 8 MHz,
+    /// `Cycles64` is an 8 µs tick — an interrupt storm, not a timebase.
+    pub fn start_interval(&mut self, source: ClockSource, interval: Interval) {
+        write_ctl(cfg_bits(source, interval) | TMSEL | CNTCL);
+    }
+
     /// Pet the dog: zero the count, keeping the current source/interval.
     /// Call from the main loop, not from a timer ISR — a feed that runs on
     /// interrupt keeps the watchdog happy even when the main loop is wedged,
@@ -291,4 +327,51 @@ impl Watchdog {
         self.stop();
         self.wdt
     }
+}
+
+#[cfg(feature = "critical-section")]
+impl Watchdog {
+    /// Set `SFRIE1.WDTIE` so an interval expiry fires the `WDT` vector.
+    ///
+    /// `SFRIE1` is chip-global (see the module docs' shared-`SFRIE1` rule), so
+    /// this is a bit-field `modify` under `critical_section::with` — it cannot
+    /// disturb `NMIIE`/`VMAIE`/… neighbors, racing or not.
+    pub fn enable_interval_interrupt(&self) {
+        critical_section::with(|_| {
+            let sfr = unsafe { pac::Sfr::steal() };
+            sfr.sfrie1().modify(|_, w| w.wdtie().set_bit());
+        });
+    }
+
+    /// Clear `SFRIE1.WDTIE`. A pending `WDTIFG` stays latched and fires on
+    /// re-enable; [`clear_interval_irq`] discards it.
+    pub fn disable_interval_interrupt(&self) {
+        critical_section::with(|_| {
+            let sfr = unsafe { pac::Sfr::steal() };
+            sfr.sfrie1().modify(|_, w| w.wdtie().clear_bit());
+        });
+    }
+}
+
+/// Has an interval expired (`SFRIFG1.WDTIFG` latched)? For polling the
+/// interval tick without enabling the interrupt at all.
+pub fn interval_pending() -> bool {
+    let sfr = unsafe { pac::Sfr::steal() };
+    sfr.sfrifg1().read().wdtifg().bit_is_set()
+}
+
+/// ISR-side: clear `SFRIFG1.WDTIFG`.
+///
+/// Servicing the dedicated `WDT` vector already auto-resets `WDTIFG` in
+/// hardware (SLAU367), so a `#[interrupt] fn WDT()` handler normally has no
+/// flag work at all — this exists for the *polling* consumer pairing with
+/// [`interval_pending`], and as belt-and-braces if a handler wants the flag
+/// provably down. Bit-field `modify` under `critical_section::with`, per the
+/// shared-`SFRIE1`/`SFRIFG1` rule in the module docs.
+#[cfg(feature = "critical-section")]
+pub fn clear_interval_irq() {
+    critical_section::with(|_| {
+        let sfr = unsafe { pac::Sfr::steal() };
+        sfr.sfrifg1().modify(|_, w| w.wdtifg().clear_bit());
+    });
 }
