@@ -20,6 +20,31 @@
 //! (`PxIFG` latches without a clock), which is why "sleep until a button" is
 //! the canonical LPM4 pattern; see [`crate::gpio`]'s interrupt support.
 
+/// Enter **LPM0** with interrupts enabled, and return once an interrupt has
+/// woken the CPU.
+///
+/// LPM0 stops only the CPU and MCLK — SMCLK, the DCO, and MODOSC-on-demand
+/// peripherals keep running. It is the mode for "a peripheral is busy and the
+/// CPU has nothing to do until it finishes": a UART receiving on SMCLK, or an
+/// ADC12 conversion self-clocking on MODOSC (`start_* → enter_lpm0() →
+/// read_result()`). The same atomic GIE+sleep `bis` and the same
+/// `#[interrupt(wake_cpu)]` requirement as [`enter_lpm3`] apply.
+#[inline]
+pub fn enter_lpm0() {
+    // GIE(3) | CPUOFF(4) = 0x18.
+    const LPM0_GIE: u16 = (1 << 3) | (1 << 4);
+    // SAFETY: writing SR to enter a low-power mode; no memory or stack effects.
+    // Immediate addressing (`#`) is load-bearing — see `enter_lpm3`.
+    unsafe {
+        core::arch::asm!(
+            "bis #{bits}, r2",
+            "nop",
+            bits = const LPM0_GIE,
+            options(nomem, nostack),
+        );
+    }
+}
+
 /// Enter **LPM3** with interrupts enabled, and return once an interrupt has
 /// woken the CPU.
 ///

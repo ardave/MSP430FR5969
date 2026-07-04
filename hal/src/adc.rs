@@ -1,10 +1,14 @@
 //! ADC12_B — the 12-bit successive-approximation analog-to-digital converter.
 //!
 //! This drives the converter in its simplest useful mode: **single-channel,
-//! single-conversion, software-triggered, polled.** You pick a channel, kick off
-//! one conversion, busy-wait the few microseconds it takes, and read the result.
-//! It is the ADC analog of [`crate::i2c`]'s blocking `probe` — no interrupts, no
-//! DMA, no sequences yet.
+//! single-conversion, software-triggered.** The `read*` methods are polled —
+//! pick a channel, kick off one conversion, busy-wait the few microseconds it
+//! takes, read the result. The `start_*` methods are the same conversions
+//! **without the wait**: arm [`enable_conversion_interrupt`]
+//! (Adc::enable_conversion_interrupt) and completion fires the `ADC12` vector,
+//! where [`read_result`] collects the count (canonically after
+//! [`crate::power::enter_lpm0`] — MODOSC self-clocks the conversion while the
+//! CPU sleeps). No DMA, no sequences yet.
 //!
 //! # How a conversion works (the mechanism this module programs)
 //!
@@ -428,6 +432,20 @@ impl Adc {
     /// source, select the channel and reference, trigger, busy-wait, and read
     /// MEM0.
     fn convert(&mut self, channel: u8, internal: Internal, refsel: RefSel) -> u16 {
+        self.arm(channel, internal, refsel);
+
+        // Self-completing (MODOSC-clocked, no external dependency): this poll is
+        // bounded by the conversion time, a few microseconds.
+        while self.adc.adc12ctl1().read().adc12busy().bit_is_set() {}
+
+        // Reading MEM0 returns the result and clears ADC12IFG0.
+        self.adc.adc12mem0().read().bits()
+    }
+
+    /// Program-and-trigger, no wait: everything [`convert`](Adc::convert) does
+    /// up to and including the `ENC|SC` write. Completion sets `ADC12IFG0`
+    /// (and fires the `ADC12` vector when enabled); MEM0 holds the result.
+    fn arm(&mut self, channel: u8, internal: Internal, refsel: RefSel) {
         // CTL3 (internal-source mapping) and MCTL0 (INCH/VRSEL) are writable only
         // while ENC = 0; a prior conversion leaves ENC set, so clear it first.
         self.adc.adc12ctl0().modify(|_, w| w.adc12enc().clear_bit());
@@ -456,13 +474,54 @@ impl Adc {
         self.adc
             .adc12ctl0()
             .modify(|_, w| w.adc12enc().set_bit().adc12sc().set_bit());
+    }
 
-        // Self-completing (MODOSC-clocked, no external dependency): this poll is
-        // bounded by the conversion time, a few microseconds.
-        while self.adc.adc12ctl1().read().adc12busy().bit_is_set() {}
+    /// Enable the MEM0 conversion-complete interrupt (`ADC12IER0.ADC12IE0`):
+    /// from now on a finishing conversion fires the `ADC12` vector (once GIE
+    /// is set).
+    ///
+    /// `ADC12IER0` is ADC-private and this driver owns `pac::Adc12`, so a
+    /// plain `modify` suffices — no critical section, unlike the shared
+    /// `SFRIE1`/`PxIE` cases.
+    pub fn enable_conversion_interrupt(&mut self) {
+        self.adc.adc12ier0().modify(|_, w| w.adc12ie0().set_bit());
+    }
 
-        // Reading MEM0 returns the result and clears ADC12IFG0.
-        self.adc.adc12mem0().read().bits()
+    /// Disable the MEM0 conversion-complete interrupt. A pending `ADC12IFG0`
+    /// stays latched (a completed-but-uncollected result still sits in MEM0;
+    /// [`read_result`] collects and clears it).
+    pub fn disable_conversion_interrupt(&mut self) {
+        self.adc.adc12ier0().modify(|_, w| w.adc12ie0().clear_bit());
+    }
+
+    /// Start one conversion on a typed analog pin and **return immediately**.
+    ///
+    /// The non-blocking sibling of [`read`](Adc::read): same channel routing
+    /// and AVCC reference, but instead of busy-waiting, completion sets
+    /// `ADC12IFG0` — poll [`conversion_pending`] or take the `ADC12` interrupt
+    /// and collect with [`read_result`]. With the default MODOSC clock the
+    /// conversion self-completes even in LPM0 (the ADC requests its oscillator
+    /// on demand), so `start… → enter_lpm0() → read_result()` samples while
+    /// the CPU sleeps.
+    ///
+    /// Starting a new conversion before collecting the previous result simply
+    /// overwrites MEM0.
+    pub fn start_conversion<P: AdcPin>(&mut self, _pin: &mut P) {
+        self.arm(P::CHANNEL, Internal::None, RefSel::Avcc);
+    }
+
+    /// Start one conversion on a raw channel number and return immediately —
+    /// the non-blocking sibling of [`read_channel`](Adc::read_channel).
+    pub fn start_channel(&mut self, channel: u8) {
+        self.arm(channel, Internal::None, RefSel::Avcc);
+    }
+
+    /// Start one conversion of the internal (AVCC–AVSS)/2 monitor and return
+    /// immediately — the non-blocking sibling of
+    /// [`read_supply_half`](Adc::read_supply_half) (same ~half-full-scale
+    /// expectation, same long-[`SampleTime`] advice).
+    pub fn start_supply_half(&mut self) {
+        self.arm(31, Internal::SupplyHalf, RefSel::Avcc);
     }
 
     /// Power the ADC core down and return the PAC peripheral.
@@ -474,6 +533,49 @@ impl Adc {
         self.adc.adc12ctl0().modify(|_, w| w.adc12on().clear_bit());
         self.adc
     }
+}
+
+// ---------------------------------------------------------------------------
+// ISR-side free functions
+// ---------------------------------------------------------------------------
+//
+// The `Adc` driver owns `pac::Adc12`, so the `ADC12` ISR reaches the handful
+// of registers it needs through `steal()` — sound because these touch only
+// the result/flag side (MEM0, IFGR0, IV) that the owner leaves alone between
+// `start_*` and collection.
+//
+// Flag-clearing semantics matter here: `ADC12IFG0` is cleared by *either*
+// reading `ADC12IV` (which reports it) *or* reading `MEM0`. The canonical ISR
+// body is just `let counts = adc::read_result();` — one read, result
+// collected, flag down. Don't also call `read_iv` "to be safe": the IV read
+// clears the flag first and a subsequent IV read reports 0, which is
+// confusing at best. `read_iv` exists for when multiple ADC interrupt sources
+// (window monitor, overflows, more MEMs) are enabled and the handler must
+// demux — not needed while this driver only ever arms IFG0.
+
+/// ISR-side: read `ADC12IV` — 0x0C means "MEM0 conversion complete"
+/// (`ADC12IFG0`), 0 means nothing pending. Reading clears the reported
+/// source's flag (for IFG0, *without* collecting MEM0 — prefer
+/// [`read_result`], which does both).
+pub fn read_iv() -> u16 {
+    let adc = unsafe { pac::Adc12::steal() };
+    adc.adc12iv().read().bits()
+}
+
+/// ISR-side: read the MEM0 conversion result. The read also clears
+/// `ADC12IFG0` in hardware — result collected, interrupt acknowledged, one
+/// bus access.
+pub fn read_result() -> u16 {
+    let adc = unsafe { pac::Adc12::steal() };
+    adc.adc12mem0().read().bits()
+}
+
+/// Has a MEM0 conversion completed (`ADC12IFG0` latched)? The polling
+/// companion to the `start_*` methods, for consumers that want non-blocking
+/// starts without enabling the interrupt.
+pub fn conversion_pending() -> bool {
+    let adc = unsafe { pac::Adc12::steal() };
+    adc.adc12ifgr0().read().adc12ifg0().bit_is_set()
 }
 
 // ---------------------------------------------------------------------------
