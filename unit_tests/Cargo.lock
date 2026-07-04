@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "timer-test"
+name = "unit_tests"
 version = "0.1.0"

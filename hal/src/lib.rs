@@ -4,6 +4,7 @@
 #![feature(asm_experimental_arch)]
 
 pub mod adc;
+mod adc_cal;
 mod baud;
 pub mod clocks;
 pub mod delay;
@@ -13,12 +14,14 @@ pub mod gpio;
 pub mod i2c;
 pub mod power;
 pub mod pwm;
+pub mod ref_a;
 pub mod rtc;
 pub mod serial;
 pub mod spi;
 pub mod sys;
 mod ticks;
 pub mod timer;
+pub mod tlv;
 pub mod watchdog;
 
 /// Boot front door: optionally stop the watchdog, then take the PAC

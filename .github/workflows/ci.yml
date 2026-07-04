@@ -8,7 +8,8 @@ name: CI
 #                     real codegen); the whole workspace -- including the
 #                     `pac_consumer` / `hal_consumer` binaries -- is type-checked
 #                     with `cargo check`.
-#   - baud-test job : runs the host-side UART baud-rate unit tests in `baud-test/`.
+#   - unit-tests job: runs the host-side unit tests in `unit_tests/` (baud,
+#                     ticks, FRAM addressing, ADC calibration).
 #
 # WHAT IT DOES NOT DO (where it leaves off)
 #   - It does NOT link the consumer binaries into flashable ELFs. The final link
@@ -82,16 +83,18 @@ jobs:
         run: cargo check --workspace
 
   # ---------------------------------------------------------------------------
-  # Host-side unit tests for the UART baud-rate math.
+  # Host-side unit tests for the HAL's pure math (baud, ticks, FRAM addressing,
+  # ADC calibration -- one module per subject, each `include!`ing the real
+  # shipping source from `hal/src/`).
   #
-  # `baud-test/` is detached from the workspace and pins its host triple to
-  # `aarch64-apple-darwin` (see baud-test/.cargo/config.toml), so it runs on an
+  # `unit_tests/` is detached from the workspace and pins its host triple to
+  # `aarch64-apple-darwin` (see unit_tests/.cargo/config.toml), so it runs on an
   # Apple-Silicon macOS runner -- `macos-latest` is arm64 -- where that triple
   # matches the host and the crate builds as documented. It also relies on
   # `-Z build-std`, hence nightly + rust-src here too.
   # ---------------------------------------------------------------------------
-  baud-test:
-    name: Baud-rate math (host tests)
+  unit-tests:
+    name: HAL pure-math (host tests)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -104,8 +107,8 @@ jobs:
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: baud-test
+          workspaces: unit_tests
 
-      - name: Run baud-rate tests
-        working-directory: baud-test
+      - name: Run host unit tests
+        working-directory: unit_tests
         run: cargo test

@@ -10,6 +10,7 @@ mod deep_sleep_tests;
 mod i2c_tests;
 mod spi_tests;
 mod adc_tests;
+mod ref_a_tests;
 mod fram_tests;
 mod rtc_tests;
 mod watchdog_tests;
@@ -19,6 +20,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     serial_port_tests::run()?;
     adc_tests::run()?;
+    ref_a_tests::run()?;
     fram_tests::run()?;
     rtc_tests::run()?;
     watchdog_tests::run()?;

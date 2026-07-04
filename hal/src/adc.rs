@@ -27,10 +27,12 @@
 //! - **`ADC12CTL2`** — `ADC12RES` sets 8/10/12-bit resolution; the result is
 //!   unsigned right-justified binary (`ADC12DF = 0`).
 //! - **`ADC12MCTL0`** — `ADC12INCH` routes one of the input channels to the
-//!   conversion, and `ADC12VRSEL` picks the reference. We use `VRSEL = 0`:
-//!   **VR+ = AVCC, VR- = AVSS**, the only reference available without bringing up
-//!   the on-chip REF_A module (not yet supported). A result therefore reads
-//!   `round(4095 · Vin / AVCC)` at 12-bit.
+//!   conversion, and `ADC12VRSEL` picks the reference. The pin-based `read`
+//!   methods use `VRSEL = 0` — **VR+ = AVCC, VR- = AVSS** — so a result reads
+//!   `round(4095 · Vin / AVCC)` at 12-bit: *ratiometric*, a fraction of
+//!   whatever the supply is. The `&Ref`-taking methods use `VRSEL = 1` —
+//!   **VR+ = VREF (the buffered [`crate::ref_a`] output), VR- = AVSS** — so a
+//!   count is worth a fixed `vref/4095` volts and results are *absolute*.
 //! - **`ADC12MEM0`** — the conversion result; reading it also clears the
 //!   per-channel interrupt flag `ADC12IFG0`.
 //!
@@ -59,8 +61,10 @@
 //! | A2 | P1.2 | A6 | P2.3 | A10 | P4.2 | A14 | P3.2 |
 //! | A3 | P1.3 | A7 | P2.4 | A11 | P4.3 | A15 | P3.3 |
 //!
-//! (The internal temperature-sensor and battery-monitor channels need the REF_A
-//! reference to be meaningful, so they are intentionally left out for now.)
+//! Two internal sources have no pin: the **temperature sensor** (A30, powered
+//! by REF_A — see [`read_temperature`](Adc::read_temperature)) and the
+//! **(AVCC–AVSS)/2 supply monitor** (A31, see
+//! [`read_supply_millivolts`](Adc::read_supply_millivolts)).
 //!
 //! # Example
 //!
@@ -74,6 +78,8 @@
 
 use crate::gpio::{Analog, Pin, P1, P2, P3, P4};
 use crate::pac;
+use crate::ref_a::Ref;
+use crate::tlv::AdcCal;
 
 /// Which on-chip source (if any) to route to the converter via `ADC12CTL3`.
 /// Internal use only — exposed to callers through the dedicated read methods.
@@ -85,6 +91,16 @@ enum Internal {
     SupplyHalf,
     /// Temperature sensor on channel A30 (`ADC12TCMAP`).
     Temperature,
+}
+
+/// What VR+ the conversion measures against (`ADC12VRSEL`). Internal — chosen
+/// by whether the caller went through a plain or a `&Ref`-taking read method.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RefSel {
+    /// `VRSEL = 0`: VR+ = AVCC (ratiometric).
+    Avcc,
+    /// `VRSEL = 1`: VR+ = buffered VREF from REF_A (absolute).
+    VRef,
 }
 
 /// Conversion resolution. Fewer bits convert (slightly) faster; more bits give
@@ -214,6 +230,8 @@ impl Config {
 /// construction, then [`read`](Adc::read) one channel at a time.
 pub struct Adc {
     adc: pac::Adc12,
+    /// Kept from [`Config`] so count→millivolt scaling knows full scale.
+    resolution: Resolution,
 }
 
 impl Adc {
@@ -255,7 +273,10 @@ impl Adc {
             Resolution::Bits12 => w.adc12res().adc12res_2(),
         });
 
-        Adc { adc }
+        Adc {
+            adc,
+            resolution: config.resolution,
+        }
     }
 
     /// Run one conversion on a typed analog pin and return the raw count.
@@ -268,6 +289,21 @@ impl Adc {
         self.read_channel(P::CHANNEL)
     }
 
+    /// Run one conversion on a typed analog pin **against the REF_A
+    /// reference** (`VRSEL = 1`) and return the raw count.
+    ///
+    /// Where [`read`](Adc::read) is ratiometric (a fraction of AVCC), this is
+    /// absolute: full scale is the reference voltage, so
+    /// `mV = counts · vref / max` — [`to_millivolts`](Adc::to_millivolts) does
+    /// exactly that. The `&Ref` both proves the reference is on and settled
+    /// (constructing one performs the handshake) and borrows it so it cannot
+    /// be `free`d mid-conversion. The input must not exceed the reference
+    /// (readings clip at full scale).
+    pub fn read_vref<P: AdcPin>(&mut self, _pin: &mut P, vref: &Ref) -> u16 {
+        let _ = vref;
+        self.convert(P::CHANNEL, Internal::None, RefSel::VRef)
+    }
+
     /// Run one conversion on a raw channel number (`0..=15` for A0..A15) and
     /// return the count, right-justified to the configured resolution.
     ///
@@ -275,7 +311,7 @@ impl Adc {
     /// real and that you hold the pin. This lower-level entry point exists for
     /// channels not tied to a single pin.
     pub fn read_channel(&mut self, channel: u8) -> u16 {
-        self.convert(channel, Internal::None)
+        self.convert(channel, Internal::None, RefSel::Avcc)
     }
 
     /// Convert the internal **(AVCC–AVSS)/2** supply monitor. **No external pin
@@ -284,7 +320,8 @@ impl Adc {
     /// Because the reference here is AVCC itself, the result is ratiometric and
     /// essentially fixed at **half full-scale** (≈ 2048 at 12-bit) no matter what
     /// the supply actually is — so this cannot measure the supply *voltage*
-    /// (that needs the on-chip REF_A reference, not yet supported), but it is an
+    /// (that is [`read_supply_millivolts`](Adc::read_supply_millivolts),
+    /// against the REF_A reference), but it is an
     /// excellent **self-contained functional check**: a freshly-built ADC that
     /// reads ~half scale here is converting correctly with nothing wired up.
     ///
@@ -293,30 +330,104 @@ impl Adc {
     /// the default 32 cycles may under-sample it and read low.
     pub fn read_supply_half(&mut self) -> u16 {
         // The supply monitor maps onto channel A31 when ADC12BATMAP is set.
-        self.convert(31, Internal::SupplyHalf)
+        self.convert(31, Internal::SupplyHalf, RefSel::Avcc)
     }
 
-    /// Convert the internal **temperature sensor** and return the raw count. **No
-    /// external pin is involved.**
+    /// Measure the supply voltage: convert the internal **(AVCC–AVSS)/2
+    /// monitor against the REF_A reference** and return **AVCC in
+    /// millivolts**. **No external pin is involved.**
     ///
-    /// **This currently reads ~0 and is not yet usable** — verified on hardware
-    /// 2026-06-27. The temperature sensor is part of the **REF_A** module, not
-    /// the ADC: it is biased by the reference generator and produces no output
-    /// unless `REFON` is set in `REFCTL0`. This driver does not bring up REF_A
-    /// (it runs off the AVCC reference), so the sensor is unpowered and the
-    /// channel reads a flat zero. The method is kept so the call site exists, but
-    /// a meaningful reading — let alone °C, which additionally needs the factory
-    /// TLV constants characterized against the internal reference — is blocked on
-    /// REF_A support. When that lands, the sensor is also high-impedance and
-    /// needs a long acquisition ([`SampleTime::Cycles256`] or more).
+    /// This is the absolute measurement [`read_supply_half`](Adc::read_supply_half)
+    /// cannot make: against a fixed reference the divider's output is a real
+    /// voltage, and doubling it recovers AVCC. The reference must exceed
+    /// AVCC/2 or the reading clips — at a 3.3 V supply that rules out 1.2 V;
+    /// use [`crate::ref_a::ReferenceVoltage::V2_0`] (covers AVCC up to 4 V).
+    ///
+    /// Uncalibrated (nominal reference, uncorrected gain/offset) — good to a
+    /// couple of percent. For the calibrated chain take
+    /// [`read_supply_raw`](Adc::read_supply_raw) and run it through
+    /// [`crate::tlv::AdcCal::correct_gain_offset`] and
+    /// [`crate::tlv::RefCal::correct`] before scaling.
+    ///
+    /// The divider is high-impedance: configure a long [`SampleTime`]
+    /// (e.g. [`SampleTime::Cycles256`]).
+    pub fn read_supply_millivolts(&mut self, vref: &Ref) -> u32 {
+        let counts = self.read_supply_raw_inner();
+        self.to_millivolts(counts, vref) * 2
+    }
+
+    /// Convert the internal (AVCC–AVSS)/2 monitor against the REF_A reference
+    /// and return the **raw count** — the entry point for the fully
+    /// calibrated supply measurement (see
+    /// [`read_supply_millivolts`](Adc::read_supply_millivolts)).
+    pub fn read_supply_raw(&mut self, vref: &Ref) -> u16 {
+        let _ = vref;
+        self.read_supply_raw_inner()
+    }
+
+    fn read_supply_raw_inner(&mut self) -> u16 {
+        self.convert(31, Internal::SupplyHalf, RefSel::VRef)
+    }
+
+    /// Convert the internal **temperature sensor** channel *against AVCC,
+    /// without touching REF_A*, and return the raw count. **No external pin is
+    /// involved.**
+    ///
+    /// The sensor is part of the **REF_A** module, not the ADC: it is a diode
+    /// stack biased by the reference generator, unpowered unless `REFON` is
+    /// set. So unless something else brought REF_A up, **this reads a flat ~0**
+    /// (verified on hardware 2026-06-27) — which is exactly what the
+    /// `adc_internal` fixture asserts to prove the ADC converts a dead channel
+    /// honestly. For an actual temperature use
+    /// [`read_temperature`](Adc::read_temperature), which takes the [`Ref`]
+    /// that powers the sensor.
     pub fn read_temperature_raw(&mut self) -> u16 {
         // The temperature sensor maps onto channel A30 when ADC12TCMAP is set.
-        self.convert(30, Internal::Temperature)
+        self.convert(30, Internal::Temperature, RefSel::Avcc)
+    }
+
+    /// Convert the internal **temperature sensor against the REF_A
+    /// reference** and return the raw count. **No external pin is involved.**
+    ///
+    /// The `&Ref` is what makes the reading real: constructing it set `REFON`,
+    /// which biases the sensor, and the conversion measures against the same
+    /// reference the factory characterization used — so the raw count feeds
+    /// straight into [`crate::tlv::AdcCal::temp_deci_celsius`] (or use
+    /// [`read_temperature_deci_celsius`](Adc::read_temperature_deci_celsius)
+    /// for the pair). The sensor output (~0.7 V, ~2.5 mV/°C) fits under any of
+    /// the three reference voltages; it is high-impedance, so configure a long
+    /// [`SampleTime`] — the datasheet asks for ≥ 30 µs of acquisition
+    /// ([`SampleTime::Cycles256`] ≈ 53 µs at MODOSC).
+    pub fn read_temperature(&mut self, vref: &Ref) -> u16 {
+        let _ = vref;
+        self.convert(30, Internal::Temperature, RefSel::VRef)
+    }
+
+    /// Measure the die temperature in **deci-°C** (273 = 27.3 °C):
+    /// [`read_temperature`](Adc::read_temperature) interpolated between the
+    /// factory 30 °C / 85 °C points for this `vref`'s voltage. `None` only if
+    /// the calibration words are corrupt (see
+    /// [`crate::tlv::AdcCal::temp_deci_celsius`]).
+    ///
+    /// Requires 12-bit [`Resolution`] — the TLV points are 12-bit conversion
+    /// results, so an 8/10-bit reading would interpolate on the wrong scale.
+    pub fn read_temperature_deci_celsius(&mut self, vref: &Ref, cal: &AdcCal) -> Option<i16> {
+        let raw = self.read_temperature(vref);
+        cal.temp_deci_celsius(vref.voltage(), raw)
+    }
+
+    /// Scale a count from a `&Ref`-taking read to **millivolts**, rounded to
+    /// nearest: `counts · vref / full_scale` at this converter's configured
+    /// [`Resolution`]. (Counts from the AVCC-referenced methods have no fixed
+    /// millivolt worth — that is the point of the reference.)
+    pub fn to_millivolts(&self, counts: u16, vref: &Ref) -> u32 {
+        crate::adc_cal::counts_to_millivolts(counts, self.resolution.max(), vref.millivolts())
     }
 
     /// The shared single-conversion sequence: optionally route an internal
-    /// source, select the channel, trigger, busy-wait, and read MEM0.
-    fn convert(&mut self, channel: u8, internal: Internal) -> u16 {
+    /// source, select the channel and reference, trigger, busy-wait, and read
+    /// MEM0.
+    fn convert(&mut self, channel: u8, internal: Internal, refsel: RefSel) -> u16 {
         // CTL3 (internal-source mapping) and MCTL0 (INCH/VRSEL) are writable only
         // while ENC = 0; a prior conversion leaves ENC set, so clear it first.
         self.adc.adc12ctl0().modify(|_, w| w.adc12enc().clear_bit());
@@ -330,10 +441,13 @@ impl Adc {
             Internal::Temperature => w.adc12batmap().clear_bit().adc12tcmap().set_bit(),
         });
 
-        // Route MEM0 to this channel: AVCC/AVSS reference, end-of-sequence (the
-        // single channel is also the last one).
+        // Route MEM0 to this channel with the requested reference pair, and
+        // end-of-sequence (the single channel is also the last one).
         self.adc.adc12mctl0().write(|w| {
-            w.adc12vrsel().adc12vrsel_0(); // VR+ = AVCC, VR- = AVSS
+            match refsel {
+                RefSel::Avcc => w.adc12vrsel().adc12vrsel_0(), // VR+ = AVCC, VR- = AVSS
+                RefSel::VRef => w.adc12vrsel().adc12vrsel_1(), // VR+ = VREF buffered, VR- = AVSS
+            };
             w.adc12eos().set_bit();
             w.adc12inch().set(channel)
         });

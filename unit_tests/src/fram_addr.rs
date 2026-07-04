@@ -1,12 +1,10 @@
 //! Host-side tests for the FRAM addressing / bounds math.
 //!
-//! This crate `include!`s the REAL source (`hal/src/fram_addr.rs`) so the tests
+//! This module `include!`s the REAL source (`hal/src/fram_addr.rs`) so the tests
 //! exercise the exact code that ships in firmware — a bad edit to `check_bounds`
 //! (e.g. dropping the `u64` widening), or to a region base/size constant, will
 //! fail these tests. The hardware access paths in `fram.rs` cannot run on the
 //! host; the region geometry they depend on is pinned here instead.
-
-#![allow(dead_code)]
 
 // Pull in the actual addressing math (pure, dependency-free core arithmetic).
 include!("../../hal/src/fram_addr.rs");

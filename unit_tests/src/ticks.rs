@@ -1,11 +1,9 @@
 //! Host-side tests for the timer tick<->time math.
 //!
-//! This crate `include!`s the REAL conversion source (`hal/src/ticks.rs`) so the
+//! This module `include!`s the REAL conversion source (`hal/src/ticks.rs`) so the
 //! tests exercise the exact code that ships in firmware — a bad edit to
 //! `ticks_to_us` / `ticks_to_ns` / `assemble_now32` (e.g. dropping the `u64`
 //! widening, or mis-packing the 32-bit timestamp) will fail these tests.
-
-#![allow(dead_code)]
 
 // Pull in the actual conversion math (pure, dependency-free core arithmetic).
 include!("../../hal/src/ticks.rs");
