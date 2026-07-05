@@ -5,8 +5,11 @@
 
 pub mod adc;
 mod adc_cal;
+pub mod aes;
 mod baud;
 pub mod clocks;
+pub mod crc;
+mod crc_soft;
 pub mod delay;
 pub mod dma;
 pub mod fram;
