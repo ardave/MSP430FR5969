@@ -105,6 +105,10 @@ fn verify_loopback_burst() -> Result<(), Box<dyn Error>> {
     let expected_body = [
         ("SPI B0 LOOPBACK OK", "P1.6<->P1.7"),
         ("SPI A1 LOOPBACK OK", "P2.5<->P2.6"),
+        // Same jumpers, per-byte work moved to DMA channel pairs (the SpiDma
+        // SpiBus impl on B0, the split-buffer transfer_dma on A1).
+        ("SPI B0 DMA OK", "P1.6<->P1.7"),
+        ("SPI A1 DMA OK", "P2.5<->P2.6"),
     ];
 
     // Bound the whole search generously: the fixture transfers (~microseconds) at

@@ -8,7 +8,10 @@
 //! (Adc::enable_conversion_interrupt) and completion fires the `ADC12` vector,
 //! where [`read_result`] collects the count (canonically after
 //! [`crate::power::enter_lpm0`] — MODOSC self-clocks the conversion while the
-//! CPU sleeps). No DMA, no sequences yet.
+//! CPU sleeps). The `*_repeated_dma` methods add the one sequencing mode this
+//! driver uses: repeat-single-channel free-running conversions with a DMA
+//! channel draining MEM0 per completion (see the DMA section below). No
+//! multi-channel sequences yet.
 //!
 //! # How a conversion works (the mechanism this module programs)
 //!
@@ -446,6 +449,18 @@ impl Adc {
     /// up to and including the `ENC|SC` write. Completion sets `ADC12IFG0`
     /// (and fires the `ADC12` vector when enabled); MEM0 holds the result.
     fn arm(&mut self, channel: u8, internal: Internal, refsel: RefSel) {
+        self.program(channel, internal, refsel);
+
+        // Arm (ENC) and trigger (SC) in one write.
+        self.adc
+            .adc12ctl0()
+            .modify(|_, w| w.adc12enc().set_bit().adc12sc().set_bit());
+    }
+
+    /// Route a channel/reference pair to MEM0, leaving `ENC` clear (the
+    /// front half of [`arm`](Adc::arm), shared with the DMA methods, which
+    /// must slot more setup between programming and the `ENC|SC` go).
+    fn program(&mut self, channel: u8, internal: Internal, refsel: RefSel) {
         // CTL3 (internal-source mapping) and MCTL0 (INCH/VRSEL) are writable only
         // while ENC = 0; a prior conversion leaves ENC set, so clear it first.
         self.adc.adc12ctl0().modify(|_, w| w.adc12enc().clear_bit());
@@ -469,11 +484,6 @@ impl Adc {
             w.adc12eos().set_bit();
             w.adc12inch().set(channel)
         });
-
-        // Arm (ENC) and trigger (SC) in one write.
-        self.adc
-            .adc12ctl0()
-            .modify(|_, w| w.adc12enc().set_bit().adc12sc().set_bit());
     }
 
     /// Enable the MEM0 conversion-complete interrupt (`ADC12IER0.ADC12IE0`):
@@ -532,6 +542,165 @@ impl Adc {
         self.adc.adc12ctl0().modify(|_, w| w.adc12enc().clear_bit());
         self.adc.adc12ctl0().modify(|_, w| w.adc12on().clear_bit());
         self.adc
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DMA-drained repeated conversions
+// ---------------------------------------------------------------------------
+//
+// `ADC12IFG0` is DMA trigger 26 (`dma::TriggerSource::Adc12`), and the DMA's
+// word read of `MEM0` clears it — the same read-collects-and-acknowledges
+// contract `read_result` documents, performed by hardware. So a channel armed
+// on that trigger turns the converter's *repeat-single-channel* mode
+// (`CONSEQ = 2` with `ADC12MSC`, where each completed conversion immediately
+// starts the next) into a free-running sampler that fills a buffer with zero
+// per-sample CPU work: complete → IFG0 edge → DMA collects MEM0 (clearing
+// IFG0) → converter is already sampling again.
+//
+// **The trigger is a latch, not the flag** (hardware-observed 2026-07-05; a
+// known undocumented erratum, TI E2E #401588): the ADC12's DMA trigger line
+// is set by a conversion completing while `ADC12IE0` is clear, and is reset
+// ONLY by a DMA transfer that the ADC trigger itself fires — a CPU read of
+// MEM0 clears `ADC12IFG0` but leaves the trigger latch high. Consequence:
+// any conversion not collected by DMA (a polled `read`, or simply the free-
+// running conversion that completes right after a run's last DMA transfer)
+// parks the latch high, and an edge-sensitive channel then never sees
+// another rising edge — on any channel, surviving even an ADC12ON power
+// cycle. Only the first run after reset would ever work. The engine
+// therefore *scrubs* the latch at the start of every run with a one-word
+// level-sensitive dummy transfer (`Channel::consume_stale_trigger_word`),
+// which a stuck-high latch fires immediately — a genuine ADC-triggered DMA
+// service, so the latch resets.
+//
+// Ordering (the project's DMA lessons apply):
+// - The scrub doubles as the MEM0/IFG0 drain (its dummy read of MEM0 clears
+//   the flag), so IFG0 idles low and every completion presents a fresh edge
+//   (normal pacing stays edge-sensitive).
+// - The channel is armed *before* `ENC|SC` starts the converter, so even the
+//   first result meets an armed channel — the ADC equivalent of arm-first,
+//   announce-second.
+//
+// Timing budget: the DMA services a trigger within a few MCLK cycles, and the
+// shortest conversion here is ~45 ADC clocks ≈ 9 µs at MODOSC — an order of
+// magnitude of headroom before a result could be overwritten, at any MCLK
+// this crate configures.
+//
+// Do not combine with `enable_conversion_interrupt`: the DMA and the ISR
+// would race to consume the one flag (collect-once, same as ever) — and per
+// the erratum above, an ISR-collected conversion also leaves the DMA trigger
+// latch parked high (the next DMA run's scrub absorbs that).
+
+#[cfg(feature = "critical-section")]
+impl Adc {
+    /// Convert a typed analog pin `buf.len()` times back-to-back
+    /// (ratiometric, AVCC reference), the results DMA-drained into `buf`.
+    /// Blocks until the buffer is full — bounded work: MODOSC self-clocks
+    /// the conversions, so `len × (sample + 13 clocks)` and no external
+    /// dependency. The converter is returned to single-conversion mode
+    /// before returning.
+    pub fn read_repeated_dma<P: AdcPin, const N: u8>(
+        &mut self,
+        _pin: &mut P,
+        ch: &mut crate::dma::Channel<N>,
+        buf: &mut [u16],
+    ) {
+        self.read_repeated_dma_inner(ch, P::CHANNEL, Internal::None, RefSel::Avcc, buf);
+    }
+
+    /// [`read_supply_half`](Adc::read_supply_half) `buf.len()` times,
+    /// DMA-drained — every sample should sit near half full-scale (same
+    /// long-[`SampleTime`] advice; the divider is high-impedance).
+    pub fn read_supply_half_repeated_dma<const N: u8>(
+        &mut self,
+        ch: &mut crate::dma::Channel<N>,
+        buf: &mut [u16],
+    ) {
+        self.read_repeated_dma_inner(ch, 31, Internal::SupplyHalf, RefSel::Avcc, buf);
+    }
+
+    /// [`read_temperature`](Adc::read_temperature) `buf.len()` times,
+    /// DMA-drained: raw counts against the REF_A reference, each one valid
+    /// input for [`crate::tlv::AdcCal::temp_deci_celsius`]. The `&Ref`
+    /// keeps the sensor biased for the whole run.
+    pub fn read_temperature_repeated_dma<const N: u8>(
+        &mut self,
+        vref: &Ref,
+        ch: &mut crate::dma::Channel<N>,
+        buf: &mut [u16],
+    ) {
+        let _ = vref;
+        self.read_repeated_dma_inner(ch, 30, Internal::Temperature, RefSel::VRef, buf);
+    }
+
+    /// The shared engine: program the channel/reference, flip the converter
+    /// into repeat-single-channel + multiple-sample-and-convert, arm the DMA
+    /// for the whole buffer, start, wait, and restore single-conversion mode.
+    fn read_repeated_dma_inner<const N: u8>(
+        &mut self,
+        ch: &mut crate::dma::Channel<N>,
+        channel: u8,
+        internal: Internal,
+        refsel: RefSel,
+        buf: &mut [u16],
+    ) {
+        if buf.is_empty() {
+            return;
+        }
+        self.program(channel, internal, refsel);
+
+        // Free-running: repeat-single-channel (CONSEQ = 2), with MSC so each
+        // completed conversion starts the next sample immediately — the
+        // ADC12SC trigger below is needed only once.
+        self.adc
+            .adc12ctl1()
+            .modify(|_, w| w.adc12conseq().adc12conseq_2());
+        self.adc.adc12ctl0().modify(|_, w| w.adc12msc().set_bit());
+
+        // Scrub the trigger latch (see the section comment: one unserviced
+        // conversion anywhere — including the tail of the previous run —
+        // parks it high and deafens every future edge-sensitive run). The
+        // scrub's dummy MEM0 read also clears a stale ADC12IFG0, so IFG0
+        // idles low and every completion below presents a fresh edge.
+        let mut scratch = 0u16;
+        unsafe {
+            ch.consume_stale_trigger_word(
+                crate::dma::TriggerSource::Adc12,
+                self.adc.adc12mem0().as_ptr() as *const u16,
+                &mut scratch,
+            );
+        }
+
+        // Arm first, start second: the first completion already finds the
+        // channel listening.
+        unsafe {
+            ch.arm_single_words(
+                crate::dma::TriggerSource::Adc12,
+                self.adc.adc12mem0().as_ptr() as *const u16,
+                crate::dma::AddrMode::Fixed,
+                buf.as_mut_ptr(),
+                crate::dma::AddrMode::Increment,
+                buf.len() as u16,
+            );
+        }
+        self.adc
+            .adc12ctl0()
+            .modify(|_, w| w.adc12enc().set_bit().adc12sc().set_bit());
+
+        // `buf.len()` collected transfers later the channel completes; the
+        // converter is still free-running until stopped below.
+        ch.wait_done();
+
+        // Stop (a conversion in flight completes, then the sequencer halts)
+        // and restore the single-conversion contract the rest of the driver
+        // assumes, draining the result that finished after the last collect.
+        self.adc.adc12ctl0().modify(|_, w| w.adc12enc().clear_bit());
+        while self.adc.adc12ctl1().read().adc12busy().bit_is_set() {}
+        self.adc.adc12ctl0().modify(|_, w| w.adc12msc().clear_bit());
+        self.adc
+            .adc12ctl1()
+            .modify(|_, w| w.adc12conseq().adc12conseq_0());
+        let _ = self.adc.adc12mem0().read().bits();
     }
 }
 

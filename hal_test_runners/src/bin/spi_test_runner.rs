@@ -45,6 +45,14 @@
 //! pass either check. Reaching the verdicts at all also proves both drivers
 //! complete their transfers rather than hanging.
 //!
+//! Then the same jumpers serve the **DMA engine**: B0 re-runs its loopback
+//! through the [`hal::spi::SpiDma`] wrapper (the `SpiBus` impl whose per-byte
+//! work is done by an RX + TX DMA channel pair), and A1 runs the split
+//! `transfer_dma` path (separate write/read buffers) with the channels
+//! reclaimed from B0 — three channels covering two buses, sequentially. The
+//! DMA patterns are the byte-reversals of the plain ones, so a stale buffer
+//! from the first phase cannot fake a pass.
+//!
 //! # Framed output for the host runner
 //!
 //! ```text
@@ -53,10 +61,13 @@
 //! SPI_TEST_BEGIN
 //! SPI B0 LOOPBACK OK                           (or `SPI B0 LOOPBACK FAIL`)
 //! SPI A1 LOOPBACK OK                           (or `SPI A1 LOOPBACK FAIL`)
+//! SPI B0 DMA OK                                (SpiDma / SpiBus round-trip)
+//! SPI A1 DMA OK                                (transfer_dma round-trip)
 //! SPI_TEST_END
 //! ```
 
 use hal::delay::Delay;
+use hal::dma::DmaExt;
 use hal::embedded_hal::delay::DelayNs as _;
 use hal::embedded_hal::digital::OutputPin;
 use hal::embedded_hal::spi::SpiBus as _;
@@ -77,6 +88,11 @@ const PATTERN_B0: [u8; 6] = [0xA5, 0x3C, 0xFF, 0x00, 0x55, 0xAA];
 /// Bitwise complement of [`PATTERN_B0`], sent on eUSCI_A1 — distinct patterns
 /// mean a jumper landed on the wrong bus cannot make either check pass.
 const PATTERN_A1: [u8; 6] = [0x5A, 0xC3, 0x00, 0xFF, 0xAA, 0x55];
+
+/// DMA-phase patterns: the byte-reversals of the polled-phase ones (distinct
+/// from those *and* from each other, closing the same cross-wiring hole).
+const PATTERN_B0_DMA: [u8; 6] = [0xAA, 0x55, 0x00, 0xFF, 0x3C, 0xA5];
+const PATTERN_A1_DMA: [u8; 6] = [0x55, 0xAA, 0xFF, 0x00, 0xC3, 0x5A];
 
 /// Firmware entry point.
 #[entry]
@@ -127,6 +143,26 @@ fn main() -> ! {
     spi_a1.transfer_in_place(&mut a1_buf).ok();
     let a1_ok = a1_buf == PATTERN_A1;
 
+    // --- DMA phase: the same loopbacks, per-byte work moved to DMA channels.
+    // Three channels serve two buses sequentially: B0 borrows ch0 (RX) + ch1
+    // (TX) inside the SpiDma wrapper, releases them, and A1 uses the same
+    // pair through the inherent transfer_dma. Reversed patterns, so a buffer
+    // left over from the polled phase can't fake a round-trip.
+    let channels = p.dma.split();
+
+    // B0 through the SpiBus impl of SpiDma.
+    let mut spi_b0_dma = spi_b0.with_dma(channels.ch0, channels.ch1);
+    let mut b0_dma_buf = PATTERN_B0_DMA;
+    spi_b0_dma.transfer_in_place(&mut b0_dma_buf).ok();
+    let b0_dma_ok = b0_dma_buf == PATTERN_B0_DMA;
+    let (_spi_b0, mut rx_ch, mut tx_ch) = spi_b0_dma.release();
+
+    // A1 through the split-buffer engine: what goes out must come back in
+    // the separate read buffer.
+    let mut a1_dma_recv = [0u8; 6];
+    spi_a1.transfer_dma(&mut rx_ch, &mut tx_ch, &mut a1_dma_recv, &PATTERN_A1_DMA);
+    let a1_dma_ok = a1_dma_recv == PATTERN_A1_DMA;
+
     loop {
         // Human-readable info lines (the host skips everything up to BEGIN).
         tx.write_all(b"spi b0 sent=").ok();
@@ -152,11 +188,23 @@ fn main() -> ! {
             b"SPI A1 LOOPBACK FAIL\r\n"
         })
         .ok();
+        tx.write_all(if b0_dma_ok {
+            b"SPI B0 DMA OK\r\n" as &[u8]
+        } else {
+            b"SPI B0 DMA FAIL\r\n"
+        })
+        .ok();
+        tx.write_all(if a1_dma_ok {
+            b"SPI A1 DMA OK\r\n" as &[u8]
+        } else {
+            b"SPI A1 DMA FAIL\r\n"
+        })
+        .ok();
         tx.write_all(b"SPI_TEST_END\r\n").ok();
 
         // Green = both loopbacks verified, red = a mismatch somewhere (missing
         // jumper / floating SOMI — the info lines say which bus).
-        if b0_ok && a1_ok {
+        if b0_ok && a1_ok && b0_dma_ok && a1_dma_ok {
             green_led.set_high().ok();
             red_led.set_low().ok();
         } else {

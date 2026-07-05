@@ -123,6 +123,10 @@ pub trait Instance: sealed::Sealed {
     const BASE: usize;
     /// Mask of the TXD+RXD bits within the P2 SEL registers.
     const PIN_MASK: u8;
+    /// This instance's `UCAxRXIFG` in the device DMA trigger table.
+    const DMA_RX_TRIGGER: crate::dma::TriggerSource;
+    /// This instance's `UCAxTXIFG` in the device DMA trigger table.
+    const DMA_TX_TRIGGER: crate::dma::TriggerSource;
 }
 
 /// Marker for the eUSCI_A0 module (UCA0TXD = P2.0, UCA0RXD = P2.1).
@@ -134,12 +138,16 @@ impl sealed::Sealed for UsciA0 {}
 impl Instance for UsciA0 {
     const BASE: usize = 0x05C0;
     const PIN_MASK: u8 = (1 << 0) | (1 << 1); // P2.0, P2.1
+    const DMA_RX_TRIGGER: crate::dma::TriggerSource = crate::dma::TriggerSource::UcA0Rx;
+    const DMA_TX_TRIGGER: crate::dma::TriggerSource = crate::dma::TriggerSource::UcA0Tx;
 }
 
 impl sealed::Sealed for UsciA1 {}
 impl Instance for UsciA1 {
     const BASE: usize = 0x05E0;
     const PIN_MASK: u8 = (1 << 5) | (1 << 6); // P2.5, P2.6
+    const DMA_RX_TRIGGER: crate::dma::TriggerSource = crate::dma::TriggerSource::UcA1Rx;
+    const DMA_TX_TRIGGER: crate::dma::TriggerSource = crate::dma::TriggerSource::UcA1Tx;
 }
 
 // ---------------------------------------------------------------------------
@@ -408,6 +416,217 @@ impl<USCI: Instance> Rx<USCI> {
             let addr = USCI::BASE + IE;
             write_reg(addr, read_reg(addr) & !UCRXIE);
         });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DMA pacing
+// ---------------------------------------------------------------------------
+//
+// `UCAxTXIFG`/`UCAxRXIFG` are DMA trigger sources, so a channel in
+// single-transfer mode can feed TXBUF exactly as fast as the wire drains it
+// (or drain RXBUF as bytes land) with no per-byte CPU work. Triggers are
+// edge-sensitive on this part (see `crate::dma`), which shapes both methods:
+//
+// - TX: `UCTXIFG` idles *high*, so arming a channel on it presents no edge.
+//   `write_all_dma` arms the channel on `buf[1..]` and writes `buf[0]`
+//   manually — TXIFG's 0->1 hop when that byte moves to the shift register
+//   is the first edge the channel sees, and each subsequent hop pulls the
+//   next byte.
+// - RX: `UCRXIFG` idles low, but a byte *already latched* when the channel
+//   is armed has spent its edge. `read_exact_dma` drains such bytes by CPU
+//   before arming, and re-checks after arming for the one that can slip in
+//   between (its edge fires before DMAEN is up, so it would stall the
+//   channel forever).
+
+#[cfg(feature = "critical-section")]
+impl<USCI: Instance> Tx<USCI> {
+    /// Transmit `buf` paced by DMA: the CPU sets up the channel, sends the
+    /// first byte, and then blocks while hardware moves the rest. Returns
+    /// once the final byte has been *accepted* into TXBUF (same contract as
+    /// the polled `write_all`) — `flush` still tells when the wire is idle.
+    ///
+    /// Blocking keeps this safe: the channel is out of `buf` before the
+    /// borrow ends. One- and zero-byte writes skip the DMA entirely (a
+    /// one-byte "rest" would be a zero-length arm, which silicon treats as
+    /// "never fires").
+    pub fn write_all_dma<const N: u8>(
+        &mut self,
+        ch: &mut crate::dma::Channel<N>,
+        buf: &[u8],
+    ) -> Result<(), Error> {
+        let Some((&first, rest)) = buf.split_first() else {
+            return Ok(());
+        };
+        if rest.is_empty() {
+            return nb::block!(try_write_byte::<USCI>(first));
+        }
+        // TXBUF must be free BEFORE the channel is armed. If a previous
+        // byte were still queued, its hand-off edge would fire the fresh
+        // channel — and from then on the CPU primer below races the DMA for
+        // every TXIFG edge, transposing and dropping bytes (observed on
+        // hardware as exactly that, on every burst after the first). With
+        // TXBUF verifiably empty, no edge can occur between arming and the
+        // priming write: an empty TXBUF has nothing left to hand off.
+        while !tx_ready::<USCI>() {}
+        unsafe {
+            ch.arm_single_bytes(
+                USCI::DMA_TX_TRIGGER,
+                rest.as_ptr(),
+                crate::dma::AddrMode::Increment,
+                (USCI::BASE + TXBUF) as *mut u8,
+                crate::dma::AddrMode::Fixed,
+                rest.len() as u16,
+            );
+            // Prime the pump — TXIFG is still up (checked above, and nothing
+            // drains an empty TXBUF), so write directly. The byte's move into
+            // the shift register re-asserts TXIFG: the first edge the channel
+            // sees, and the only writer from here on is the DMA.
+            write_reg(USCI::BASE + TXBUF, first as u16);
+        }
+        ch.wait_done();
+        Ok(())
+    }
+}
+
+#[cfg(feature = "critical-section")]
+impl<USCI: Instance> Rx<USCI> {
+    /// Arm `ch` to DMA-receive exactly `buf.len()` bytes into `buf`, then
+    /// return immediately — the non-blocking sibling of
+    /// [`read_exact_dma`](Self::read_exact_dma), for the *arm-before-the-peer-
+    /// transmits* pattern: armed first, even the payload's opening byte meets
+    /// the channel's trigger edge and lands by DMA, no matter how fast the
+    /// bytes stream in. (A CPU poll loop cannot make that guarantee: at 9600
+    /// baud, bytes 1 ms apart overrun RXBUF between polls.)
+    ///
+    /// Anything stale in RXBUF is drained and **discarded** first (its
+    /// trigger edge is spent, and under this pattern nothing real has been
+    /// sent yet). Poll [`Channel::is_done`](crate::dma::Channel::is_done) /
+    /// [`wait_done`](crate::dma::Channel::wait_done) for completion, or
+    /// [`disarm`](crate::dma::Channel::disarm) to abandon (e.g. on timeout).
+    ///
+    /// # Safety
+    ///
+    /// `buf` must stay valid — and untouched by the CPU — until the channel
+    /// reports done or is disarmed; the compiler cannot see the DMA's writes.
+    /// `buf` must be non-empty (a zero-length arm never fires or completes).
+    pub unsafe fn start_read_dma<const N: u8>(
+        &mut self,
+        ch: &mut crate::dma::Channel<N>,
+        buf: &mut [u8],
+    ) {
+        while rx_ready::<USCI>() {
+            let _ = try_read_byte::<USCI>();
+        }
+        ch.arm_single_bytes(
+            USCI::DMA_RX_TRIGGER,
+            (USCI::BASE + RXBUF) as *const u8,
+            crate::dma::AddrMode::Fixed,
+            buf.as_mut_ptr(),
+            crate::dma::AddrMode::Increment,
+            buf.len() as u16,
+        );
+    }
+
+    /// Receive exactly `buf.len()` bytes, DMA-paced, blocking until the
+    /// buffer is full. Bytes already latched in RXBUF when this is called
+    /// count toward the total (they are consumed by CPU — their trigger edge
+    /// is already spent, see the section comment).
+    ///
+    /// **Error visibility is reduced on the DMA path**: the DMA's RXBUF
+    /// reads clear the STATW error flags without anyone looking at them, so
+    /// framing/parity/overrun in DMA-moved bytes goes unreported. Only the
+    /// CPU-consumed stragglers get the full error decode. Use the polled or
+    /// interrupt path when per-byte error accounting matters.
+    pub fn read_exact_dma<const N: u8>(
+        &mut self,
+        ch: &mut crate::dma::Channel<N>,
+        buf: &mut [u8],
+    ) -> Result<(), Error> {
+        let mut filled = 0;
+        while filled < buf.len() {
+            // Consume anything already latched: no future edge belongs to it.
+            while filled < buf.len() && rx_ready::<USCI>() {
+                match try_read_byte::<USCI>() {
+                    Ok(b) => {
+                        buf[filled] = b;
+                        filled += 1;
+                    }
+                    Err(nb::Error::WouldBlock) => break,
+                    Err(nb::Error::Other(e)) => return Err(e),
+                }
+            }
+            if filled == buf.len() {
+                break;
+            }
+            let count = (buf.len() - filled) as u16;
+            unsafe {
+                ch.arm_single_bytes(
+                    USCI::DMA_RX_TRIGGER,
+                    (USCI::BASE + RXBUF) as *const u8,
+                    crate::dma::AddrMode::Fixed,
+                    buf.as_mut_ptr().add(filled),
+                    crate::dma::AddrMode::Increment,
+                    count,
+                );
+            }
+            // A byte that landed after the drain but before DMAEN went live
+            // latched RXIFG with an edge the channel never saw — it would
+            // stall the transfer forever. `remaining() == count` distinguishes
+            // that stale byte from one the channel is already servicing (the
+            // DMA wins the bus within a couple of cycles, before these reads).
+            if rx_ready::<USCI>() && ch.remaining() == count {
+                ch.disarm();
+                continue; // go around: drain it by CPU, re-arm for the rest
+            }
+            ch.wait_done();
+            filled = buf.len();
+        }
+        Ok(())
+    }
+}
+
+/// A transmit half bonded to a DMA channel: [`embedded_io::Write`] whose
+/// `write` moves the whole buffer per [`Tx::write_all_dma`]. The channel is
+/// dedicated while bonded; [`release`](Self::release) gives both halves back.
+#[cfg(feature = "critical-section")]
+pub struct DmaTx<USCI, const N: u8> {
+    tx: Tx<USCI>,
+    ch: crate::dma::Channel<N>,
+}
+
+#[cfg(feature = "critical-section")]
+impl<USCI: Instance> Tx<USCI> {
+    /// Bond this transmit half to a DMA channel, yielding a [`DmaTx`].
+    pub fn with_dma<const N: u8>(self, ch: crate::dma::Channel<N>) -> DmaTx<USCI, N> {
+        DmaTx { tx: self, ch }
+    }
+}
+
+#[cfg(feature = "critical-section")]
+impl<USCI: Instance, const N: u8> DmaTx<USCI, N> {
+    /// Take the transmit half and the DMA channel back.
+    pub fn release(self) -> (Tx<USCI>, crate::dma::Channel<N>) {
+        (self.tx, self.ch)
+    }
+}
+
+#[cfg(feature = "critical-section")]
+impl<USCI: Instance, const N: u8> embedded_io::ErrorType for DmaTx<USCI, N> {
+    type Error = Error;
+}
+
+#[cfg(feature = "critical-section")]
+impl<USCI: Instance, const N: u8> embedded_io::Write for DmaTx<USCI, N> {
+    /// Never a short write: DMA pacing has no cheaper stopping point, so the
+    /// whole buffer goes out (blocking) and `write_all` degenerates to one
+    /// call.
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+        self.tx.write_all_dma(&mut self.ch, buf)?;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        nb::block!(try_flush::<USCI>())
     }
 }
 
