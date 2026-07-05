@@ -105,6 +105,7 @@ const DMAREQ: u16 = 1 << 0; // Software trigger (trigger source 0)
 const DMAIE: u16 = 1 << 2; // Interrupt enable (DMAIFG -> DMA vector)
 const DMAIFG: u16 = 1 << 3; // Transfer-complete flag (DMAxSZ reached 0)
 const DMAEN: u16 = 1 << 4; // Channel enable
+const DMALEVEL: u16 = 1 << 5; // Level-sensitive trigger (edge-sensitive when 0)
 const DMASRCBYTE: u16 = 1 << 6; // Source is byte-wide (0 = word)
 const DMADSTBYTE: u16 = 1 << 7; // Destination is byte-wide (0 = word)
 const DMASRCINCR_SHIFT: u16 = 8; // Source address mode, bits 9:8
@@ -487,18 +488,120 @@ impl<const N: u8> Channel<N> {
         dst_mode: AddrMode,
         count: u16,
     ) {
+        self.arm_single(
+            trigger,
+            src as usize,
+            src_mode,
+            dst as usize,
+            dst_mode,
+            DMASRCBYTE | DMADSTBYTE,
+            count,
+        );
+    }
+
+    /// [`arm_single_bytes`](Self::arm_single_bytes), word-wide: one 16-bit
+    /// item per trigger edge, `count` **words** total. The natural width for
+    /// 16-bit peripheral data registers — e.g. draining `ADC12MEM0` results,
+    /// where a byte-wide read would truncate the conversion. `&[u16]`-derived
+    /// pointers guarantee the alignment the word accesses require.
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`arm_single_bytes`](Self::arm_single_bytes), with
+    /// `count` in words and both pointers word-aligned.
+    pub unsafe fn arm_single_words(
+        &mut self,
+        trigger: TriggerSource,
+        src: *const u16,
+        src_mode: AddrMode,
+        dst: *mut u16,
+        dst_mode: AddrMode,
+        count: u16,
+    ) {
+        self.arm_single(
+            trigger,
+            src as usize,
+            src_mode,
+            dst as usize,
+            dst_mode,
+            0, // word-to-word
+            count,
+        );
+    }
+
+    /// Shared core of the single-transfer-mode arming wrappers above.
+    unsafe fn arm_single(
+        &mut self,
+        trigger: TriggerSource,
+        src: usize,
+        src_mode: AddrMode,
+        dst: usize,
+        dst_mode: AddrMode,
+        width_bits: u16,
+        count: u16,
+    ) {
         self.set_trigger(trigger);
-        self.set_addresses(src as usize, dst as usize, count);
+        self.set_addresses(src, dst, count);
         let ctl = DMADT_SINGLE
             | (src_mode.bits() << DMASRCINCR_SHIFT)
             | (dst_mode.bits() << DMADSTINCR_SHIFT)
-            | DMASRCBYTE
-            | DMADSTBYTE
+            | width_bits
             | DMAEN;
         // Buffer contents must be committed before the peripheral can pace
         // reads out of it.
         barrier();
         write_reg(Self::BASE + CTL, ctl);
+    }
+
+    /// Consume a **stale-high trigger latch**: arm one *level-sensitive*
+    /// word transfer (`src` → `dst`, both fixed) on `trigger`, give it a few
+    /// cycles to fire, and disarm. Returns whether it fired.
+    ///
+    /// Exists because at least one trigger source is not a flag but a
+    /// **latch**: the ADC12 trigger (hardware-observed on this device, and a
+    /// known undocumented erratum — TI E2E #401588) is set by a conversion
+    /// completing while `ADC12IE0` is clear and reset **only by a DMA
+    /// transfer the ADC trigger itself fires**. CPU reads of `MEM0` do not
+    /// touch it, so one unserviced completion parks the line high and an
+    /// edge-sensitive channel never sees another rising edge — on *any*
+    /// channel, surviving even an `ADC12ON` power-cycle. A level-sensitive
+    /// transfer fires on the stuck-high level immediately, and being a real
+    /// ADC-triggered DMA service, resets the latch.
+    ///
+    /// (SLAU367P sanctions `DMALEVEL` only for the external `DMAE0` trigger;
+    /// this one-word scrub is deliberately minimal, hardware-verified
+    /// 2026-07-05, and the channel is back to edge-sensitive before it is
+    /// used for anything else.)
+    ///
+    /// # Safety
+    ///
+    /// `src` must be valid to read and `dst` valid to write, one word each,
+    /// for the duration of the call (it is blocking-bounded, so locals are
+    /// fine). Reading `src` must be acceptable — for the ADC scrub the read
+    /// of `MEM0` also clears `ADC12IFG0`, which the caller must expect.
+    pub unsafe fn consume_stale_trigger_word(
+        &mut self,
+        trigger: TriggerSource,
+        src: *const u16,
+        dst: *mut u16,
+    ) -> bool {
+        self.set_trigger(trigger);
+        self.set_addresses(src as usize, dst as usize, 1);
+        write_reg(Self::BASE + CTL, DMADT_SINGLE | DMALEVEL | DMAEN);
+        // A high latch is serviced within a couple of MCLK cycles; a short
+        // bounded spin distinguishes "consumed" from "was never pending".
+        let mut spins = 0u16;
+        while self.ctl() & DMAIFG == 0 && spins < 100 {
+            spins += 1;
+        }
+        let fired = self.ctl() & DMAIFG != 0;
+        // Disarm and clear completion; the whole-word write also drops
+        // DMALEVEL, returning the channel to its edge-sensitive default.
+        critical_section::with(|_| unsafe {
+            write_reg(Self::BASE + CTL, 0);
+        });
+        barrier();
+        fired
     }
 
     /// Software trigger: with the channel armed on
