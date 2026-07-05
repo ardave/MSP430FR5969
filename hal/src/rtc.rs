@@ -88,7 +88,7 @@ pub struct DateTime {
     pub second: u8,
 }
 
-/// Why [`Rtc::new`] declined to start the clock.
+/// Why [`Rtc::new`] (or [`Rtc::attach`]) declined to hand over the clock.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Error {
     /// ACLK is not 32 768 Hz, so the calendar would not advance at one Hz.
@@ -146,6 +146,49 @@ impl Rtc {
         this.rtc.rtcctl01().modify(|_, w| w.rtchold().clear_bit());
 
         Ok(this)
+    }
+
+    /// Adopt the calendar that survived LPM3.5 and set it running again — the
+    /// wake-path counterpart of [`Rtc::new`].
+    ///
+    /// The RTC_B lives in its own always-powered domain, so it keeps counting
+    /// straight through LPM3.5's regulator-off sleep — but the wake is a BOR
+    /// reset, so the rebooted program holds no [`Rtc`] value, and [`Rtc::new`]
+    /// would destroy exactly what survived (it rewrites the calendar).
+    /// `attach` adopts it instead, honoring what the wake actually does to the
+    /// module (hardware-observed on this part, 2026-07-04): the **calendar
+    /// contents survive frozen** — the wake re-asserts `RTCHOLD`, halting the
+    /// count at the wake moment — the wake's interrupt flag (e.g. `RTCTEVIFG`,
+    /// see [`event_irq_pending`]) stays latched as evidence, and the interrupt
+    /// *enable* bits come back cleared. So `attach` verifies ACLK is 32 768 Hz
+    /// again (re-run [`crate::clocks::configure_low_power`] first — the
+    /// crystal never stopped, its pins being latched, so it settles at once)
+    /// and **releases `RTCHOLD`** so time resumes.
+    ///
+    /// Two consequences to plan around:
+    ///
+    /// - The calendar stands still from the wake until this call — attach
+    ///   early in boot, or each wake silently loses wall-clock time (up to
+    ///   a second even when prompt, since the sub-second prescaler state is
+    ///   not recoverable).
+    /// - Re-arm any wake interrupt (e.g. [`enable_event_interrupt`]
+    ///   (Rtc::enable_event_interrupt)) before the next LPM3.5 entry; the
+    ///   enables do not survive the wake.
+    ///
+    /// Calling this on a genuinely cold RTC (nothing survived) is not
+    /// detectable from the registers — `RTCHOLD` reads 1 in both cases — and
+    /// would set a reset-value calendar running. Gate the call on the reset
+    /// reason instead: only attach when `SYSRSTIV` reported
+    /// [`Lpm5WakeUp`](crate::sys::ResetReason::Lpm5WakeUp).
+    pub fn attach(rtc: pac::RtcBRealTimeClock, clocks: &Clocks) -> Result<Self, Error> {
+        if clocks.aclk() != 32_768 {
+            return Err(Error::ClockNot32768);
+        }
+        // Release the hold the wake re-asserted; the calendar resumes from
+        // the preserved (frozen-at-wake) value. Binary/BCD mode survived the
+        // wake, so unlike `new` there is nothing else to program.
+        rtc.rtcctl01().modify(|_, w| w.rtchold().clear_bit());
+        Ok(Rtc { rtc })
     }
 
     /// Overwrite the calendar with `dt` (e.g. to set the time from an external
@@ -254,6 +297,21 @@ pub fn read_iv() -> u16 {
     // way to service the shared RTC vector; touches no state the Rtc owner writes.
     let rtc = unsafe { pac::RtcBRealTimeClock::steal() };
     rtc.rtciv().read().bits()
+}
+
+/// Is the time-event interrupt flag (`RTCTEVIFG`) latched?
+///
+/// The direct-flag sibling of [`read_iv`], for the one situation where the IV
+/// register cannot answer: after an **LPM3.5 wake**, the event flag that woke
+/// the part is still latched but its *enable* bit was cleared by the wake —
+/// and `RTCIV` only reports enabled sources, so it reads 0 (hardware-observed
+/// on this part). Non-destructive: reading the flag does not clear it (unlike
+/// a `read_iv` consume), so it can be checked before deciding how to handle
+/// the wake; clear it with [`clear_event_irq`] when done.
+pub fn event_irq_pending() -> bool {
+    // SAFETY: a stolen handle reading one interrupt flag — no state written.
+    let rtc = unsafe { pac::RtcBRealTimeClock::steal() };
+    rtc.rtcctl01().read().rtctevifg().bit_is_set()
 }
 
 /// Clear the time-event interrupt flag (`RTCTEVIFG`) from the `RTC` ISR, for
