@@ -8,6 +8,7 @@ mod adc_cal;
 mod baud;
 pub mod clocks;
 pub mod delay;
+pub mod dma;
 pub mod fram;
 mod fram_addr;
 pub mod gpio;

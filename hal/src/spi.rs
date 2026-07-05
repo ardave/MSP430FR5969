@@ -135,6 +135,11 @@ pub trait Instance: sealed::Sealed {
     const P1_PINS: u8;
     /// Mask of this instance's SPI pins within the P2 SEL registers.
     const P2_PINS: u8;
+    /// This instance's RX flag in the device DMA trigger table (`UCAxRXIFG` /
+    /// `UCB0RXIFG0` — the same flag serves SPI mode).
+    const DMA_RX_TRIGGER: crate::dma::TriggerSource;
+    /// This instance's TX flag in the device DMA trigger table.
+    const DMA_TX_TRIGGER: crate::dma::TriggerSource;
 }
 
 /// Marker for eUSCI_A0 in SPI mode (SIMO = P2.0, SOMI = P2.1, CLK = P1.5).
@@ -154,6 +159,8 @@ impl Instance for UsciA0 {
     const IFG: usize = 0x1C;
     const P1_PINS: u8 = 1 << 5; // P1.5 CLK
     const P2_PINS: u8 = (1 << 0) | (1 << 1); // P2.0 SIMO, P2.1 SOMI
+    const DMA_RX_TRIGGER: crate::dma::TriggerSource = crate::dma::TriggerSource::UcA0Rx;
+    const DMA_TX_TRIGGER: crate::dma::TriggerSource = crate::dma::TriggerSource::UcA0Tx;
 }
 
 impl sealed::Sealed for UsciA1 {}
@@ -162,6 +169,8 @@ impl Instance for UsciA1 {
     const IFG: usize = 0x1C;
     const P1_PINS: u8 = 0;
     const P2_PINS: u8 = (1 << 4) | (1 << 5) | (1 << 6); // P2.4 CLK, P2.5 SIMO, P2.6 SOMI
+    const DMA_RX_TRIGGER: crate::dma::TriggerSource = crate::dma::TriggerSource::UcA1Rx;
+    const DMA_TX_TRIGGER: crate::dma::TriggerSource = crate::dma::TriggerSource::UcA1Tx;
 }
 
 impl sealed::Sealed for UsciB0 {}
@@ -170,6 +179,8 @@ impl Instance for UsciB0 {
     const IFG: usize = 0x2C;
     const P1_PINS: u8 = (1 << 6) | (1 << 7); // P1.6 SIMO, P1.7 SOMI
     const P2_PINS: u8 = 1 << 2; // P2.2 CLK
+    const DMA_RX_TRIGGER: crate::dma::TriggerSource = crate::dma::TriggerSource::UcB0Rx0;
+    const DMA_TX_TRIGGER: crate::dma::TriggerSource = crate::dma::TriggerSource::UcB0Tx0;
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +436,287 @@ impl<USCI: Instance> embedded_hal::spi::SpiBus<u8> for Spi<USCI> {
 
     /// No-op: [`transfer_byte`](Spi::transfer_byte) already blocks until each
     /// byte is fully shifted, so nothing is ever left in flight.
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DMA-driven transfers
+// ---------------------------------------------------------------------------
+//
+// Full-duplex SPI is the textbook two-channel DMA job: one channel drains
+// RXBUF into memory on `UCxRXIFG`, another feeds TXBUF from memory on
+// `UCxTXIFG`, and the eUSCI's own flags keep the two exactly one byte apart —
+// TXBUF is double-buffered, so the TX channel loads byte i+1 while byte i is
+// still shifting, and the RX channel collects byte i the moment it lands.
+// The CPU's role shrinks to arming both channels and sending the first byte.
+//
+// Ordering rules (both fall out of the edge-sensitive triggers, see
+// `crate::dma`):
+//
+// 1. The RX channel is armed *before* anything is transmitted, so no
+//    received byte's edge fires unseen.
+// 2. `UCTXIFG` idles high (no edge on arm), so the TX channel is armed on
+//    `buf[1..]` and byte 0 is written by CPU — its move into the shift
+//    register re-asserts TXIFG, the first edge the TX channel sees.
+//
+// Every received byte is collected by the RX channel even on write-only
+// operations (into a fixed scratch byte), so `UCOE` can never accumulate.
+
+/// The DMA engine: clock `n >= 1` bytes, the first written by CPU, the
+/// remaining `n - 1` fed by `tx_ch` from `tx_rest`, all `n` received bytes
+/// stored via `rx_ch` at `rx_dst`. Blocks until the last byte has fully
+/// round-tripped (its reception *is* the end of the clocking).
+///
+/// # Safety
+///
+/// `tx_rest` must be valid for `n - 1` reads under `tx_mode`'s walk and
+/// `rx_dst` for `n` writes under `rx_mode`'s walk, both for the duration of
+/// the call (it blocks, so slice borrows in the callers suffice).
+#[cfg(feature = "critical-section")]
+unsafe fn dma_clock_bytes<USCI: Instance, const RN: u8, const TN: u8>(
+    rx_ch: &mut crate::dma::Channel<RN>,
+    tx_ch: &mut crate::dma::Channel<TN>,
+    first: u8,
+    tx_rest: *const u8,
+    tx_mode: crate::dma::AddrMode,
+    rx_dst: *mut u8,
+    rx_mode: crate::dma::AddrMode,
+    n: u16,
+) {
+    let base = USCI::BASE;
+    // TXBUF must be free BEFORE the TX channel is armed: a still-queued byte
+    // would hand off mid-arm and its TXIFG edge would fire the fresh channel,
+    // putting the CPU primer below in a race with the DMA (the bug hardware
+    // caught on the UART path — see `serial::Tx::write_all_dma`). Between
+    // blocking calls the bus is idle so this never actually spins, but the
+    // ordering is what makes the priming write below race-free.
+    while read_reg(base + USCI::IFG) & UCTXIFG == 0 {}
+    // Drop any stale latched byte so RXIFG idles low and every byte of this
+    // transfer presents a fresh trigger edge (also clears a stray UCOE).
+    if read_reg(base + USCI::IFG) & UCRXIFG != 0 {
+        let _ = read_reg(base + RXBUF);
+    }
+    rx_ch.arm_single_bytes(
+        USCI::DMA_RX_TRIGGER,
+        (base + RXBUF) as *const u8,
+        crate::dma::AddrMode::Fixed,
+        rx_dst,
+        rx_mode,
+        n,
+    );
+    if n > 1 {
+        tx_ch.arm_single_bytes(
+            USCI::DMA_TX_TRIGGER,
+            tx_rest,
+            tx_mode,
+            (base + TXBUF) as *mut u8,
+            crate::dma::AddrMode::Fixed,
+            n - 1,
+        );
+    }
+    // Prime: TXIFG is still up (verified before arming; an empty TXBUF has
+    // nothing to hand off), so write directly — the DMA owns TXBUF after this.
+    write_reg(base + TXBUF, first as u16);
+    // The RX channel completes when byte n lands — i.e. when the bus goes
+    // idle — which is the one wait that covers everything.
+    rx_ch.wait_done();
+    if n > 1 {
+        tx_ch.wait_done(); // finished before RX; just consume its flag
+    }
+}
+
+#[cfg(feature = "critical-section")]
+impl<USCI: Instance> Spi<USCI> {
+    /// [`SpiBus::write`](embedded_hal::spi::SpiBus::write), DMA-paced: send `words`, the received bytes routed
+    /// to a scratch byte (kept, not skipped — see the section comment).
+    pub fn write_dma<const RN: u8, const TN: u8>(
+        &mut self,
+        rx_ch: &mut crate::dma::Channel<RN>,
+        tx_ch: &mut crate::dma::Channel<TN>,
+        words: &[u8],
+    ) {
+        let Some((&first, rest)) = words.split_first() else {
+            return;
+        };
+        let mut scratch = 0u8;
+        unsafe {
+            dma_clock_bytes::<USCI, RN, TN>(
+                rx_ch,
+                tx_ch,
+                first,
+                rest.as_ptr(),
+                crate::dma::AddrMode::Increment,
+                &mut scratch,
+                crate::dma::AddrMode::Fixed,
+                words.len() as u16,
+            );
+        }
+    }
+
+    /// [`SpiBus::read`](embedded_hal::spi::SpiBus::read), DMA-paced: clock `words.len()` dummy `0x00` bytes
+    /// out (from a fixed stack byte), storing what arrives.
+    pub fn read_dma<const RN: u8, const TN: u8>(
+        &mut self,
+        rx_ch: &mut crate::dma::Channel<RN>,
+        tx_ch: &mut crate::dma::Channel<TN>,
+        words: &mut [u8],
+    ) {
+        let n = words.len();
+        if n == 0 {
+            return;
+        }
+        let dummy = 0u8;
+        unsafe {
+            dma_clock_bytes::<USCI, RN, TN>(
+                rx_ch,
+                tx_ch,
+                dummy,
+                &dummy,
+                crate::dma::AddrMode::Fixed,
+                words.as_mut_ptr(),
+                crate::dma::AddrMode::Increment,
+                n as u16,
+            );
+        }
+    }
+
+    /// [`SpiBus::transfer_in_place`](embedded_hal::spi::SpiBus::transfer_in_place), DMA-paced: send each byte of `words`
+    /// and overwrite it with the byte received in its place. Sound despite
+    /// the aliasing: the TX channel reads `words[i + 1]` a full byte-time
+    /// before the RX channel writes `words[i]`, so no slot is written until
+    /// well after it was read.
+    pub fn transfer_in_place_dma<const RN: u8, const TN: u8>(
+        &mut self,
+        rx_ch: &mut crate::dma::Channel<RN>,
+        tx_ch: &mut crate::dma::Channel<TN>,
+        words: &mut [u8],
+    ) {
+        let n = words.len();
+        let Some(&first) = words.first() else {
+            return;
+        };
+        unsafe {
+            dma_clock_bytes::<USCI, RN, TN>(
+                rx_ch,
+                tx_ch,
+                first,
+                words.as_ptr().add(1),
+                crate::dma::AddrMode::Increment,
+                words.as_mut_ptr(),
+                crate::dma::AddrMode::Increment,
+                n as u16,
+            );
+        }
+    }
+
+    /// [`SpiBus::transfer`](embedded_hal::spi::SpiBus::transfer), DMA-paced. Equal lengths run as one full-duplex
+    /// pass; unequal lengths add a second pass for the excess (`write`
+    /// overhang sends with reception discarded, `read` overhang clocks
+    /// dummy `0x00`s), matching the trait's padding semantics.
+    pub fn transfer_dma<const RN: u8, const TN: u8>(
+        &mut self,
+        rx_ch: &mut crate::dma::Channel<RN>,
+        tx_ch: &mut crate::dma::Channel<TN>,
+        read: &mut [u8],
+        write: &[u8],
+    ) {
+        let common = read.len().min(write.len());
+        if common > 0 {
+            unsafe {
+                dma_clock_bytes::<USCI, RN, TN>(
+                    rx_ch,
+                    tx_ch,
+                    write[0],
+                    write.as_ptr().add(1),
+                    crate::dma::AddrMode::Increment,
+                    read.as_mut_ptr(),
+                    crate::dma::AddrMode::Increment,
+                    common as u16,
+                );
+            }
+        }
+        if write.len() > common {
+            self.write_dma(rx_ch, tx_ch, &write[common..]);
+        } else if read.len() > common {
+            self.read_dma(rx_ch, tx_ch, &mut read[common..]);
+        }
+    }
+
+    /// Bond this SPI master to an RX + TX DMA channel pair, yielding a
+    /// [`SpiDma`] whose [`SpiBus`](embedded_hal::spi::SpiBus) impl runs every
+    /// operation through the two-channel engine.
+    pub fn with_dma<const RN: u8, const TN: u8>(
+        self,
+        rx_ch: crate::dma::Channel<RN>,
+        tx_ch: crate::dma::Channel<TN>,
+    ) -> SpiDma<USCI, RN, TN> {
+        SpiDma {
+            spi: self,
+            rx_ch,
+            tx_ch,
+        }
+    }
+}
+
+/// An [`Spi`] bonded to two DMA channels (RX pacing and TX pacing);
+/// implements [`embedded_hal::spi::SpiBus`] with the byte loop replaced by
+/// hardware. Same blocking, infallible contract as the polled impl — DMA
+/// changes who does the per-byte work, not the semantics.
+#[cfg(feature = "critical-section")]
+pub struct SpiDma<USCI, const RN: u8, const TN: u8> {
+    spi: Spi<USCI>,
+    rx_ch: crate::dma::Channel<RN>,
+    tx_ch: crate::dma::Channel<TN>,
+}
+
+#[cfg(feature = "critical-section")]
+impl<USCI: Instance, const RN: u8, const TN: u8> SpiDma<USCI, RN, TN> {
+    /// Take the SPI master and both DMA channels back.
+    pub fn release(self) -> (Spi<USCI>, crate::dma::Channel<RN>, crate::dma::Channel<TN>) {
+        (self.spi, self.rx_ch, self.tx_ch)
+    }
+}
+
+#[cfg(feature = "critical-section")]
+impl<USCI: Instance, const RN: u8, const TN: u8> embedded_hal::spi::ErrorType
+    for SpiDma<USCI, RN, TN>
+{
+    // Blocking with the RX channel always collecting means no overrun is
+    // possible — same reasoning as the polled impl.
+    type Error = core::convert::Infallible;
+}
+
+#[cfg(feature = "critical-section")]
+impl<USCI: Instance, const RN: u8, const TN: u8> embedded_hal::spi::SpiBus<u8>
+    for SpiDma<USCI, RN, TN>
+{
+    fn read(&mut self, words: &mut [u8]) -> Result<(), Self::Error> {
+        self.spi.read_dma(&mut self.rx_ch, &mut self.tx_ch, words);
+        Ok(())
+    }
+
+    fn write(&mut self, words: &[u8]) -> Result<(), Self::Error> {
+        self.spi.write_dma(&mut self.rx_ch, &mut self.tx_ch, words);
+        Ok(())
+    }
+
+    fn transfer(&mut self, read: &mut [u8], write: &[u8]) -> Result<(), Self::Error> {
+        self.spi
+            .transfer_dma(&mut self.rx_ch, &mut self.tx_ch, read, write);
+        Ok(())
+    }
+
+    fn transfer_in_place(&mut self, words: &mut [u8]) -> Result<(), Self::Error> {
+        self.spi
+            .transfer_in_place_dma(&mut self.rx_ch, &mut self.tx_ch, words);
+        Ok(())
+    }
+
+    /// No-op: the engine's one wait is the RX channel completing, and the
+    /// last byte is *received* only after it has fully clocked — the bus is
+    /// idle at every return.
     fn flush(&mut self) -> Result<(), Self::Error> {
         Ok(())
     }

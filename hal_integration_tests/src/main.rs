@@ -14,6 +14,7 @@ mod i2c_tests;
 mod spi_tests;
 mod adc_tests;
 mod adc_irq_tests;
+mod dma_tests;
 mod ref_a_tests;
 mod fram_tests;
 mod rtc_tests;
@@ -28,9 +29,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Starting Tests");
 
-    let suites: [(&str, fn() -> Result<(), Box<dyn Error>>); 15] = [
+    let suites: [(&str, fn() -> Result<(), Box<dyn Error>>); 16] = [
         ("serial_port", serial_port_tests::run),
         ("serial_irq", serial_irq_tests::run),
+        ("dma", dma_tests::run),
         ("adc", adc_tests::run),
         ("adc_irq", adc_irq_tests::run),
         ("ref_a", ref_a_tests::run),
