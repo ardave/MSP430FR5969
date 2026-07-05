@@ -1,18 +1,45 @@
-//! eUSCI_B0 SPI master driver (`embedded_hal::spi::SpiBus`).
+//! SPI master driver for the eUSCI modules (`embedded_hal::spi::SpiBus`).
 //!
 //! Synchronous serial: unlike the UART, SPI clocks data out *and* in on the same
-//! transfers, driven by a master-generated clock. This driver runs eUSCI_B0 as a
-//! 3-pin SPI **master** (SIMO out, SOMI in, CLK out; no chip-select), which is
-//! all a loopback self-test or a single always-selected slave needs.
+//! transfers, driven by a master-generated clock. This driver runs an eUSCI
+//! module as a 3-pin SPI **master** (SIMO out, SOMI in, CLK out; no chip-select),
+//! which is all a loopback self-test or a single always-selected slave needs.
+//!
+//! # Three instances
+//!
+//! All three serial modules on this part can be an SPI master. The eUSCI_A
+//! modules are UARTs only until `UCSYNC` flips them synchronous — in SPI mode
+//! they expose the same control-word layout as eUSCI_B (SLAU367P chapters 30/31
+//! vs 32). Register offsets are also identical **except** the interrupt
+//! registers: `IFG` sits at 0x1C on eUSCI_A but 0x2C on eUSCI_B (eUSCI_B's map
+//! reserves the middle for its I2C address/mask registers). The [`Instance`]
+//! trait carries that one difference plus each module's base and pin mux.
+//!
+//! | Module   | SIMO | SOMI | CLK  | Cost of claiming it                        |
+//! |----------|------|------|------|--------------------------------------------|
+//! | eUSCI_A0 | P2.0 | P2.1 | P1.5 | **the backchannel UART** (no more logging) |
+//! | eUSCI_A1 | P2.5 | P2.6 | P2.4 | the second UART                            |
+//! | eUSCI_B0 | P1.6 | P1.7 | P2.2 | I2C (same module), TB0.3/TB0.4 PWM         |
+//!
+//! All pins mux at `SEL1:SEL0 = 10`. eUSCI_A1 is the instance that finally
+//! allows **SPI and I2C simultaneously** (A1-SPI + B0-I2C) — previously
+//! impossible because eUSCI_B0 is one register block serving either role.
+//!
+//! Note that the PAC exposes *mode-view* singletons, not module singletons:
+//! `UsciA0UartMode` and `UsciA0SpiMode` are two windows onto the same silicon
+//! (same base address). Consuming one does not consume the other, so the type
+//! system cannot stop a program configuring the same module both ways — same
+//! long-standing situation as B0's SPI/I2C split. One mode per module per
+//! program is the rule; last `init` wins otherwise.
 //!
 //! # Why raw register access (like `crate::serial`)
 //!
-//! eUSCI_B's register *map* differs from eUSCI_A — its interrupt registers sit at
-//! different offsets (`IFG` at 0x2C, not 0x1C) — and the PAC models the SPI-mode
-//! control words as raw bytes with no typed fields. So, as in [`crate::serial`],
-//! we drive the peripheral through raw volatile access at known offsets from the
-//! eUSCI_B0 base, with explicit, named bit constants. Offsets were taken from the
-//! PAC's `usci_b0_spi_mode` register block; the `CTLW0` bit layout from SLAU367P.
+//! The PAC models the SPI-mode control words as raw bytes with no typed fields,
+//! and (for eUSCI_B) omits the interrupt-flag register entirely. So, as in
+//! [`crate::serial`], we drive the peripheral through raw volatile access at
+//! known offsets, with explicit, named bit constants. Offsets were taken from
+//! the PAC's `usci_*_spi_mode` register blocks; the `CTLW0` bit layout from
+//! SLAU367P.
 //!
 //! # Full-duplex is fundamental
 //!
@@ -25,30 +52,31 @@
 //!
 //! # Loopback
 //!
-//! Jumper SIMO (P1.6) to SOMI (P1.7) and the bytes you send come straight back —
-//! `transfer_in_place(buf)` leaves `buf` unchanged. That is the self-contained
-//! hardware test for this driver, needing no external device.
+//! Jumper an instance's SIMO to its SOMI and the bytes you send come straight
+//! back — `transfer_in_place(buf)` leaves `buf` unchanged. That is the
+//! self-contained hardware test for this driver, needing no external device.
+//! (It cannot vouch for the CLK *pin*: the shift clock is internal, so a
+//! loopback passes whether or not CLK reaches its pad — CLK muxing is verified
+//! against the datasheet pin tables instead.)
 
 use core::marker::PhantomData;
 
 use crate::pac;
 
 // ---------------------------------------------------------------------------
-// Register layout (offsets from the eUSCI_B0 base address, 0x0640)
+// Register layout (offsets from the eUSCI base address)
 // ---------------------------------------------------------------------------
-
-const BASE: usize = 0x0640;
 
 const CTLW0: usize = 0x00; // Control word 0 (reset, mode, clock select, format)
 const BRW: usize = 0x06; // Bit-rate prescaler (BRCLK / UCBRW = SPI clock)
 const RXBUF: usize = 0x0C; // Receive buffer
 const TXBUF: usize = 0x0E; // Transmit buffer
-const IFG: usize = 0x2C; // Interrupt flags (note: 0x2C on eUSCI_B, not 0x1C)
+// IFG is per-instance: 0x1C on eUSCI_A, 0x2C on eUSCI_B (see Instance::IFG).
 
-// CTLW0 bit fields (SLAU367P eUSCI_B SPI register description)
+// CTLW0 bit fields (SLAU367P; identical for eUSCI_A and eUSCI_B in SPI mode)
 const UCSWRST: u16 = 1 << 0; // Software reset (hold module in reset while = 1)
 const UCSSEL_SMCLK: u16 = 0b10 << 6; // BRCLK <- SMCLK (UCSSELx = 10)
-const UCSYNC: u16 = 1 << 8; // 1 = synchronous (SPI/I2C); must be set for SPI
+const UCSYNC: u16 = 1 << 8; // 1 = synchronous; this is what makes an eUSCI_A an SPI
 const UCMST: u16 = 1 << 11; // 1 = master mode
 const UCMSB: u16 = 1 << 13; // 1 = MSB first, 0 = LSB first
 const UCCKPL: u16 = 1 << 14; // Clock polarity: 0 = idle low, 1 = idle high
@@ -59,16 +87,11 @@ const UCCKPH: u16 = 1 << 15; // Clock phase (note: inverted vs SPI CPHA — see 
 const UCRXIFG: u16 = 1 << 0; // Receive buffer full (transfer complete)
 const UCTXIFG: u16 = 1 << 1; // Transmit buffer empty (ready for next byte)
 
-// ---------------------------------------------------------------------------
-// Pin mux: SIMO=P1.6, SOMI=P1.7, CLK=P2.2, all at SEL1:SEL0 = 10
-// ---------------------------------------------------------------------------
-
+// Port function-select registers (see crate::gpio for the full map).
 const P1SEL0: usize = 0x020A;
 const P1SEL1: usize = 0x020C;
 const P2SEL0: usize = 0x020B;
 const P2SEL1: usize = 0x020D;
-const P1_SPI_PINS: u8 = (1 << 6) | (1 << 7); // P1.6 SIMO, P1.7 SOMI
-const P2_SPI_PINS: u8 = 1 << 2; // P2.2 CLK
 
 #[inline(always)]
 unsafe fn read_reg(addr: usize) -> u16 {
@@ -90,6 +113,63 @@ unsafe fn set_bits_u8(addr: usize, mask: u8) {
 unsafe fn clear_bits_u8(addr: usize, mask: u8) {
     let p = addr as *mut u8;
     p.write_volatile(p.read_volatile() & !mask);
+}
+
+// ---------------------------------------------------------------------------
+// eUSCI instance markers
+// ---------------------------------------------------------------------------
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Describes a concrete eUSCI instance running SPI: its register base, where
+/// its interrupt-flag register sits (the one eUSCI_A/eUSCI_B map difference),
+/// and which `PxSEL` bits mux its SIMO/SOMI/CLK pins (all at `SEL1:SEL0 = 10`).
+pub trait Instance: sealed::Sealed {
+    /// Absolute base address of the eUSCI register block.
+    const BASE: usize;
+    /// Offset of `UCxIFG` from `BASE`: 0x1C on eUSCI_A, 0x2C on eUSCI_B.
+    const IFG: usize;
+    /// Mask of this instance's SPI pins within the P1 SEL registers.
+    const P1_PINS: u8;
+    /// Mask of this instance's SPI pins within the P2 SEL registers.
+    const P2_PINS: u8;
+}
+
+/// Marker for eUSCI_A0 in SPI mode (SIMO = P2.0, SOMI = P2.1, CLK = P1.5).
+///
+/// **These are the backchannel UART pins** — claiming A0 for SPI forfeits the
+/// eZ-FET serial console (and jumpering P2.0↔P2.1 would fight the eZ-FET's
+/// own TX driver, so A0 has no safe loopback fixture on the LaunchPad).
+pub struct UsciA0;
+/// Marker for eUSCI_A1 in SPI mode (SIMO = P2.5, SOMI = P2.6, CLK = P2.4).
+pub struct UsciA1;
+/// Marker for eUSCI_B0 in SPI mode (SIMO = P1.6, SOMI = P1.7, CLK = P2.2).
+pub struct UsciB0;
+
+impl sealed::Sealed for UsciA0 {}
+impl Instance for UsciA0 {
+    const BASE: usize = 0x05C0;
+    const IFG: usize = 0x1C;
+    const P1_PINS: u8 = 1 << 5; // P1.5 CLK
+    const P2_PINS: u8 = (1 << 0) | (1 << 1); // P2.0 SIMO, P2.1 SOMI
+}
+
+impl sealed::Sealed for UsciA1 {}
+impl Instance for UsciA1 {
+    const BASE: usize = 0x05E0;
+    const IFG: usize = 0x1C;
+    const P1_PINS: u8 = 0;
+    const P2_PINS: u8 = (1 << 4) | (1 << 5) | (1 << 6); // P2.4 CLK, P2.5 SIMO, P2.6 SOMI
+}
+
+impl sealed::Sealed for UsciB0 {}
+impl Instance for UsciB0 {
+    const BASE: usize = 0x0640;
+    const IFG: usize = 0x2C;
+    const P1_PINS: u8 = (1 << 6) | (1 << 7); // P1.6 SIMO, P1.7 SOMI
+    const P2_PINS: u8 = 1 << 2; // P2.2 CLK
 }
 
 // ---------------------------------------------------------------------------
@@ -187,21 +267,24 @@ impl Config {
 // Driver
 // ---------------------------------------------------------------------------
 
-/// A configured eUSCI_B0 SPI master. Implements [`embedded_hal::spi::SpiBus`].
+/// A configured eUSCI SPI master. Implements [`embedded_hal::spi::SpiBus`].
 ///
 /// `PhantomData<*const ()>` keeps it `!Send`/`!Sync` (it owns memory-mapped
 /// peripheral state that must not cross threads/contexts) and zero-sized.
-pub struct Spi {
+pub struct Spi<USCI> {
+    _usci: PhantomData<USCI>,
     _not_send: PhantomData<*const ()>,
 }
 
-impl Spi {
-    /// Configure eUSCI_B0 for 3-pin SPI master operation and return the driver.
+impl<USCI: Instance> Spi<USCI> {
+    /// Configure the eUSCI module for 3-pin SPI master operation and return
+    /// the driver.
     ///
     /// Follows the SLAU367P initialization sequence: hold in reset
     /// (`UCSWRST = 1`), program control word + bit rate, mux the pins, then
     /// release reset.
     fn init(config: Config) -> Self {
+        let base = USCI::BASE;
         let (ckph, ckpl) = config.mode.ckph_ckpl();
 
         // Synchronous (UCSYNC) master (UCMST), BRCLK = SMCLK, 3-pin (UCMODE=00),
@@ -221,19 +304,24 @@ impl Spi {
 
         unsafe {
             // 1. Hold in reset while programming.
-            write_reg(BASE + CTLW0, ctlw0);
+            write_reg(base + CTLW0, ctlw0);
             // 2. Bit-rate prescaler (SPI clock = BRCLK / UCBRW).
-            write_reg(BASE + BRW, config.prescaler() as u16);
-            // 3. Mux SIMO/SOMI/CLK to the eUSCI_B0 function (SEL1:SEL0 = 10).
-            set_bits_u8(P1SEL1, P1_SPI_PINS);
-            clear_bits_u8(P1SEL0, P1_SPI_PINS);
-            set_bits_u8(P2SEL1, P2_SPI_PINS);
-            clear_bits_u8(P2SEL0, P2_SPI_PINS);
+            write_reg(base + BRW, config.prescaler() as u16);
+            // 3. Mux SIMO/SOMI/CLK to the eUSCI function (SEL1:SEL0 = 10).
+            if USCI::P1_PINS != 0 {
+                set_bits_u8(P1SEL1, USCI::P1_PINS);
+                clear_bits_u8(P1SEL0, USCI::P1_PINS);
+            }
+            if USCI::P2_PINS != 0 {
+                set_bits_u8(P2SEL1, USCI::P2_PINS);
+                clear_bits_u8(P2SEL0, USCI::P2_PINS);
+            }
             // 4. Release for operation.
-            write_reg(BASE + CTLW0, ctlw0 & !UCSWRST);
+            write_reg(base + CTLW0, ctlw0 & !UCSWRST);
         }
 
         Spi {
+            _usci: PhantomData,
             _not_send: PhantomData,
         }
     }
@@ -241,29 +329,48 @@ impl Spi {
     /// Full-duplex transfer of one byte: shift `byte` out on SIMO while shifting
     /// the simultaneous SOMI byte in. Blocks until the transfer completes.
     pub fn transfer_byte(&mut self, byte: u8) -> u8 {
+        let base = USCI::BASE;
         unsafe {
             // Wait for TXBUF to be free, then start the transfer.
-            while read_reg(BASE + IFG) & UCTXIFG == 0 {}
-            write_reg(BASE + TXBUF, byte as u16);
+            while read_reg(base + USCI::IFG) & UCTXIFG == 0 {}
+            write_reg(base + TXBUF, byte as u16);
             // Wait for the received byte — its arrival means the byte fully
             // clocked out and back in (TX and RX share the clock).
-            while read_reg(BASE + IFG) & UCRXIFG == 0 {}
-            read_reg(BASE + RXBUF) as u8
+            while read_reg(base + USCI::IFG) & UCRXIFG == 0 {}
+            read_reg(base + RXBUF) as u8
         }
     }
 }
 
-/// Extension trait to turn the PAC eUSCI_B0 SPI peripheral into an [`Spi`].
+/// Extension trait to turn a PAC eUSCI SPI-mode peripheral into an [`Spi`].
 pub trait SpiExt {
+    /// The eUSCI instance marker for this peripheral.
+    type Instance: Instance;
+
     /// Consume the PAC peripheral and configure it as a 3-pin SPI master.
-    fn into_spi(self, config: Config) -> Spi;
+    fn into_spi(self, config: Config) -> Spi<Self::Instance>;
 }
 
 impl SpiExt for pac::UsciB0SpiMode {
-    fn into_spi(self, config: Config) -> Spi {
-        // Consuming the PAC singleton proves exclusive ownership of eUSCI_B0;
-        // the driver then drives it through raw access.
-        Spi::init(config)
+    type Instance = UsciB0;
+    fn into_spi(self, config: Config) -> Spi<UsciB0> {
+        // Consuming the PAC singleton proves exclusive ownership of the SPI
+        // view of the module; the driver then drives it through raw access.
+        Spi::<UsciB0>::init(config)
+    }
+}
+
+impl SpiExt for pac::UsciA0SpiMode {
+    type Instance = UsciA0;
+    fn into_spi(self, config: Config) -> Spi<UsciA0> {
+        Spi::<UsciA0>::init(config)
+    }
+}
+
+impl SpiExt for pac::UsciA1SpiMode {
+    type Instance = UsciA1;
+    fn into_spi(self, config: Config) -> Spi<UsciA1> {
+        Spi::<UsciA1>::init(config)
     }
 }
 
@@ -271,13 +378,13 @@ impl SpiExt for pac::UsciB0SpiMode {
 // embedded-hal SpiBus
 // ---------------------------------------------------------------------------
 
-impl embedded_hal::spi::ErrorType for Spi {
+impl<USCI: Instance> embedded_hal::spi::ErrorType for Spi<USCI> {
     // A blocking master that reads each RXBUF before clocking the next byte
     // cannot overrun, so transfers never fail.
     type Error = core::convert::Infallible;
 }
 
-impl embedded_hal::spi::SpiBus<u8> for Spi {
+impl<USCI: Instance> embedded_hal::spi::SpiBus<u8> for Spi<USCI> {
     /// Clock `words.len()` bytes (sending dummy `0x00`), storing what arrives.
     fn read(&mut self, words: &mut [u8]) -> Result<(), Self::Error> {
         for w in words.iter_mut() {
