@@ -19,39 +19,49 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// The eUSCI_B0 SPI master has no on-chip way to feed its own transmit line back
-/// to its receive line, so a loopback test needs an external jumper. Prompt the
-/// operator to install it and confirm before we flash and check the round-trip.
+/// An SPI master has no on-chip way to feed its own transmit line back to its
+/// receive line, so a loopback test needs an external jumper — one per bus
+/// under test (eUSCI_B0 and eUSCI_A1, both exercised by a single flash of the
+/// fixture). Prompt the operator to install them and confirm before we flash
+/// and check the round-trips.
 fn test_loopback_round_trips() -> Result<(), Box<dyn Error>> {
-    prompt_for_loopback_jumper()?;
+    prompt_for_loopback_jumpers()?;
     deployment::build_and_flash("spi_test_runner")?;
     verify_loopback_burst()
 }
 
 /// Print the jumper hookup and block until the operator presses Enter (or aborts
-/// with Ctrl-C). The fixture only round-trips its pattern once SIMO is wired back
-/// to SOMI, so we must not flash until the jumper is in place.
-fn prompt_for_loopback_jumper() -> Result<(), Box<dyn Error>> {
+/// with Ctrl-C). The fixture only round-trips its patterns once each SIMO is
+/// wired back to its SOMI, so we must not flash until the jumpers are in place.
+fn prompt_for_loopback_jumpers() -> Result<(), Box<dyn Error>> {
     println!();
-    println!("  ┌─ SPI loopback: jumper eUSCI_B0's SIMO back to its SOMI ────────────┐");
+    println!("  ┌─ SPI loopback: jumper each SPI master's SIMO back to its SOMI ─────┐");
     println!("  │                                                                    │");
-    println!("  │    MSP430FR5969 LaunchPad                                           │");
+    println!("  │    MSP430FR5969 LaunchPad                                          │");
     println!("  │    ----------------------                                          │");
-    println!("  │    P1.6 (SIMO) ───┐                                                 │");
-    println!("  │                   │  one jumper wire                                │");
-    println!("  │    P1.7 (SOMI) ───┘                                                 │");
+    println!("  │    eUSCI_B0:  P1.6 (SIMO) ───┐                                     │");
+    println!("  │                              │  jumper wire 1                      │");
+    println!("  │               P1.7 (SOMI) ───┘                                     │");
     println!("  │                                                                    │");
-    println!("  │    • Install a single jumper between P1.6 and P1.7 so every byte   │");
-    println!("  │      the SPI master transmits is clocked straight back in.          │");
-    println!("  │    • If you previously ran the I2C scan, no pull-ups are needed     │");
-    println!("  │      here — but make sure any BME280 breakout is disconnected so    │");
-    println!("  │      it doesn't drive SOMI.                                         │");
+    println!("  │    eUSCI_A1:  P2.5 (SIMO) ───┐                                     │");
+    println!("  │                              │  jumper wire 2                      │");
+    println!("  │               P2.6 (SOMI) ───┘                                     │");
     println!("  │                                                                    │");
-    println!("  │    The fixture transfers A5 3C FF 00 55 AA in place; with the       │");
-    println!("  │    jumper every byte round-trips, so the loopback PASSes.           │");
+    println!("  │    • One flash tests both buses: two independent jumpers, one per  │");
+    println!("  │      bus, so every byte each master transmits is clocked straight  │");
+    println!("  │      back in. (P2.5/P2.6 are silkscreened on the BoosterPack       │");
+    println!("  │      header, next to each other.)                                  │");
+    println!("  │    • If you previously ran the I2C scan, no pull-ups are needed    │");
+    println!("  │      here — but make sure any BME280 breakout is disconnected so   │");
+    println!("  │      it doesn't drive SOMI.                                        │");
+    println!("  │                                                                    │");
+    println!("  │    The fixture transfers A5 3C FF 00 55 AA in place on B0 and its  │");
+    println!("  │    complement 5A C3 00 FF AA 55 on A1 (distinct patterns, so a     │");
+    println!("  │    cross-wired jumper cannot pass); with the jumpers every byte    │");
+    println!("  │    round-trips and both loopbacks PASS.                            │");
     println!("  │                                                                    │");
     println!("  └────────────────────────────────────────────────────────────────────┘");
-    print!("  Install the jumper, then press Enter to flash and test (Ctrl-C to abort)... ");
+    print!("  Install both jumpers, then press Enter to flash and test (Ctrl-C to abort)... ");
     io::stdout().flush()?;
 
     let mut _line = String::new();
@@ -67,9 +77,10 @@ fn prompt_for_loopback_jumper() -> Result<(), Box<dyn Error>> {
 /// Open the board's UART (8N1) and verify the fixed verdict burst the
 /// `spi_test_runner` fixture transmits once per second.
 ///
-/// The fixture transfers once at startup and always emits the complete burst, so
-/// a body mismatch after BEGIN is a real failure: `SPI LOOPBACK FAIL` means the
-/// received pattern did not match the sent one (missing jumper or floating SOMI).
+/// The fixture transfers once per bus at startup and always emits the complete
+/// burst, so a body mismatch after BEGIN is a real failure: `SPI B0/A1 LOOPBACK
+/// FAIL` means that bus's received pattern did not match the sent one (missing
+/// jumper or floating SOMI on that bus).
 fn verify_loopback_burst() -> Result<(), Box<dyn Error>> {
     let port_path = crate::serial::resolve_port()?;
 
@@ -91,7 +102,10 @@ fn verify_loopback_burst() -> Result<(), Box<dyn Error>> {
 
     const BEGIN: &str = "SPI_TEST_BEGIN";
     const END: &str = "SPI_TEST_END";
-    let expected_body = ["SPI LOOPBACK OK"];
+    let expected_body = [
+        ("SPI B0 LOOPBACK OK", "P1.6<->P1.7"),
+        ("SPI A1 LOOPBACK OK", "P2.5<->P2.6"),
+    ];
 
     // Bound the whole search generously: the fixture transfers (~microseconds) at
     // startup, then repeats the burst every ~1 s.
@@ -109,12 +123,12 @@ fn verify_loopback_burst() -> Result<(), Box<dyn Error>> {
             continue;
         }
 
-        for expected in expected_body {
+        for (expected, jumper) in expected_body {
             let got = read_line(port.as_mut(), deadline)?;
             if got != expected {
                 return Err(format!(
                     "spi mismatch after BEGIN: expected {expected:?}, got {got:?} \
-                     (missing jumper? check the P1.6<->P1.7 loopback wire)"
+                     (missing jumper? check the {jumper} loopback wire)"
                 )
                 .into());
             }
@@ -125,7 +139,9 @@ fn verify_loopback_burst() -> Result<(), Box<dyn Error>> {
             return Err(format!("expected {END:?} to close the burst, got {got:?}").into());
         }
 
-        println!("  verified full {BEGIN}..{END} burst (pattern round-tripped through loopback)");
+        println!(
+            "  verified full {BEGIN}..{END} burst (patterns round-tripped through both loopbacks)"
+        );
         return Ok(());
     }
 }
