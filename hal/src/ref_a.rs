@@ -39,9 +39,17 @@
 //! `REFMSTR` arbitration bit; here there is nothing to arbitrate, the ADC just
 //! consumes whatever REF_A produces.
 //!
-//! Not implemented (yet): `REFOUT`, which buffers VREF onto the P1.1 pin for
-//! external circuitry — it needs the analog-pin typestate plumbed through, and
-//! nothing on the LaunchPad consumes it.
+//! # `REFOUT` — the reference on a pin
+//!
+//! [`Ref::enable_output`] buffers VREF onto the **P1.1** pad (the package's
+//! VREF+ function) for external circuitry — or, hands-free, for *other on-die
+//! consumers that can only see pads*: [`crate::comp_e`]'s input channels tap
+//! pads, so REFOUT on P1.1 = C1 is the one way to present a known mid-rail
+//! analog voltage to the comparator with no wiring at all (the comp
+//! integration fixture sweeps the comparator's VCC ladder against it). Takes
+//! the P1.1 `Analog` typestate pin as proof the digital path is disconnected.
+//! LaunchPad caveat: P1.1 is also button S2 — a held button shorts REFOUT to
+//! ground.
 //!
 //! # Choosing the voltage
 //!
@@ -112,6 +120,9 @@ impl ReferenceVoltage {
 pub struct Ref {
     ref_a: pac::SharedReference,
     voltage: ReferenceVoltage,
+    /// `REFOUT` state, carried so [`program`](Ref::program)'s whole-register
+    /// write preserves it across [`set_voltage`](Ref::set_voltage).
+    output_enabled: bool,
 }
 
 impl Ref {
@@ -123,7 +134,11 @@ impl Ref {
     /// `REFGENRDY` until the output is settled (tens of µs). Both polls are
     /// bounded, internal waits — no external dependency, cannot hang.
     pub fn new(ref_a: pac::SharedReference, voltage: ReferenceVoltage) -> Self {
-        let mut r = Ref { ref_a, voltage };
+        let mut r = Ref {
+            ref_a,
+            voltage,
+            output_enabled: false,
+        };
         r.program(voltage);
         r
     }
@@ -147,7 +162,24 @@ impl Ref {
         self.voltage.millivolts()
     }
 
-    /// The busy-gate → program → settle sequence shared by `new`/`set_voltage`.
+    /// Buffer VREF onto the **P1.1** pad (`REFOUT`). The pin must already be
+    /// in the `Analog` typestate (digital path disconnected) — it is only
+    /// borrowed, since REF_A holds no per-pin state; keep it analog for as
+    /// long as the output is enabled. The output tracks later
+    /// [`set_voltage`](Ref::set_voltage) calls.
+    pub fn enable_output(&mut self, _pin: &crate::gpio::Pin<crate::gpio::P1, 1, crate::gpio::Analog>) {
+        self.output_enabled = true;
+        self.program(self.voltage);
+    }
+
+    /// Stop driving P1.1 (`REFOUT` off); the reference itself stays on.
+    pub fn disable_output(&mut self) {
+        self.output_enabled = false;
+        self.program(self.voltage);
+    }
+
+    /// The busy-gate → program → settle sequence shared by
+    /// `new`/`set_voltage`/`enable_output`.
     fn program(&mut self, voltage: ReferenceVoltage) {
         while self.ref_a.refctl0().read().refgenbusy().bit_is_set() {}
         self.ref_a.refctl0().write(|w| {
@@ -156,6 +188,7 @@ impl Ref {
                 ReferenceVoltage::V2_0 => w.refvsel().refvsel_1(),
                 ReferenceVoltage::V2_5 => w.refvsel().refvsel_2(),
             };
+            w.refout().bit(self.output_enabled);
             w.refon().set_bit()
         });
         while self.ref_a.refctl0().read().refgenrdy().bit_is_clear() {}
