@@ -10,6 +10,14 @@ license = "MIT OR Apache-2.0"
 keywords = ["msp430", "svd2rust", "no-std", "ti", "microcontroller"]
 categories = ["embedded", "hardware-support", "no-std"]
 
+# docs.rs builds on x86_64 Linux by default; document for the real target with
+# the rt-gated items (vector table, interrupt re-exports) included. The tier-3
+# target has no prebuilt core, hence build-std (docs.rs builds on nightly).
+[package.metadata.docs.rs]
+default-target = "msp430-none-elf"
+features = ["rt", "critical-section"]
+cargo-args = ["-Z", "build-std=core"]
+
 [features]
 # Enabling `rt` pulls in msp430-rt (the reset handler, RAM init, vector-table
 # glue and the #[entry]/#[interrupt] macros) and turns on its `device` feature

@@ -52,6 +52,9 @@ const MCTLW: usize = 0x08; // Modulation control (UCBRSx, UCBRFx, UCOS16)
 const STATW: usize = 0x0A; // Status (error flags, UCBUSY)
 const RXBUF: usize = 0x0C; // Receive buffer
 const TXBUF: usize = 0x0E; // Transmit buffer
+// Referenced only from the `critical-section`-gated RX-interrupt methods —
+// without that feature it is (correctly) unreferenced, not dead.
+#[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 const IE: usize = 0x1A; // Interrupt enables (UCTXIE, UCRXIE)
 const IFG: usize = 0x1C; // Interrupt flags (UCTXIFG, UCRXIFG)
 const IV: usize = 0x1E; // Interrupt vector (read clears the reported source)
@@ -76,6 +79,7 @@ const UCOE: u16 = 1 << 5; // Overrun error
 const UCFE: u16 = 1 << 6; // Framing error
 
 // IE bit fields
+#[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 const UCRXIE: u16 = 1 << 0; // Receive interrupt enable
 
 // IFG bit fields

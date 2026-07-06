@@ -10,7 +10,7 @@ edition = "2024"
 baud_115200 = []
 
 [dependencies]
-hal = { path = "../hal", features = ["rt", "critical-section"] }
+hal = { path = "../hal", package = "msp430fr5969-hal", features = ["rt", "critical-section"] }
 # Third-party embedded-hal 1.0 driver for the BME280, used by the bme280_env
 # binary. Driving a real ecosystem crate through hal::i2c::I2c is the strongest
 # validation that our embedded_hal::i2c::I2c impl is correct and interoperable.

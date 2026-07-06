@@ -86,8 +86,14 @@ use crate::pac;
 // Register layout (absolute addresses; DMA block base is 0x0500)
 // ---------------------------------------------------------------------------
 
+// Items below carrying `cfg_attr(..., allow(dead_code))` are referenced only
+// from the `critical-section`-gated channel-configuration impl further down —
+// without that feature they are (correctly) unreferenced, not dead (the same
+// pattern as `watchdog::arm`).
 const DMA_BASE: usize = 0x0500;
+#[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 const DMACTL0: usize = DMA_BASE + 0x00; // Trigger select: ch0 bits 4:0, ch1 bits 12:8
+#[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 const DMACTL1: usize = DMA_BASE + 0x02; // Trigger select: ch2 bits 4:0
 const DMAIV: usize = DMA_BASE + 0x0E; // Interrupt vector (read clears reported flag)
 
@@ -96,24 +102,36 @@ const DMAIV: usize = DMA_BASE + 0x0E; // Interrupt vector (read clears reported 
 const CH_STRIDE: usize = 0x10;
 const CH0_BASE: usize = DMA_BASE + 0x10;
 const CTL: usize = 0x00; // DMAxCTL
+#[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 const SA: usize = 0x02; // DMAxSA (20-bit: low word + high word)
+#[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 const DA: usize = 0x06; // DMAxDA (20-bit: low word + high word)
 const SZ: usize = 0x0A; // DMAxSZ (transfer count, decrements; reloads on completion)
 
 // DMAxCTL bit fields (SLAU367P; values verified against msp430fr5969.h)
+#[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 const DMAREQ: u16 = 1 << 0; // Software trigger (trigger source 0)
+#[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 const DMAIE: u16 = 1 << 2; // Interrupt enable (DMAIFG -> DMA vector)
 const DMAIFG: u16 = 1 << 3; // Transfer-complete flag (DMAxSZ reached 0)
 const DMAEN: u16 = 1 << 4; // Channel enable
+#[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 const DMALEVEL: u16 = 1 << 5; // Level-sensitive trigger (edge-sensitive when 0)
+#[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 const DMASRCBYTE: u16 = 1 << 6; // Source is byte-wide (0 = word)
+#[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 const DMADSTBYTE: u16 = 1 << 7; // Destination is byte-wide (0 = word)
+#[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 const DMASRCINCR_SHIFT: u16 = 8; // Source address mode, bits 9:8
+#[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 const DMADSTINCR_SHIFT: u16 = 10; // Destination address mode, bits 11:10
+#[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 const DMADT_SINGLE: u16 = 0 << 12; // One item per trigger; DMAEN clears at SZ = 0
+#[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 const DMADT_BLOCK: u16 = 1 << 12; // Whole block per trigger; CPU halted throughout
 
 /// Trigger-select field masks within DMACTL0/DMACTL1 (5 bits per channel).
+#[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 const TSEL_MASK: u16 = 0x001F;
 
 #[inline(always)]
@@ -122,6 +140,7 @@ unsafe fn read_reg(addr: usize) -> u16 {
 }
 
 #[inline(always)]
+#[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 unsafe fn write_reg(addr: usize, val: u16) {
     (addr as *mut u16).write_volatile(val);
 }
@@ -132,6 +151,7 @@ unsafe fn write_reg(addr: usize, val: u16) {
 /// read of the destination buffer above the register write that started the
 /// transfer filling it — or sink a source-buffer write below it.
 #[inline(always)]
+#[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 fn barrier() {
     // SAFETY: an empty asm block; without `nomem` it is a full memory clobber.
     unsafe { core::arch::asm!("", options(nostack, preserves_flags)) }
@@ -215,6 +235,7 @@ pub enum AddrMode {
 
 impl AddrMode {
     /// The 2-bit `DMAxINCR` field value (0b00 unchanged, 0b10 dec, 0b11 inc).
+    #[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
     const fn bits(self) -> u16 {
         match self {
             AddrMode::Fixed => 0b00,
