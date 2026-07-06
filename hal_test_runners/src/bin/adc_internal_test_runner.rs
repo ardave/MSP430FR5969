@@ -85,7 +85,7 @@ fn main() -> ! {
 
     // Unlock GPIO (clear LOCKLPM5) so the UART pin mux takes effect. (The ADC
     // internal channels need no pins.)
-    p.pmm.pm5ctl0().modify(|_, w| w.locklpm5().clear_bit());
+    hal::gpio::unlock_pins(&p.pmm);
 
     // UART (eUSCI_A0): 9600 8N1, BRCLK = SMCLK = 8 MHz.
     let serial = p

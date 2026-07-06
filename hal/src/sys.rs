@@ -5,7 +5,9 @@
 //! NMI vector generators, the JTAG mailbox, BSL configuration. That makes this
 //! module the natural home for HAL services that belong to the chip as a
 //! whole rather than to any bus, timer, or pin. The first resident is decoding
-//! the **reset reason** out of `SYSRSTIV`.
+//! the **reset reason** out of `SYSRSTIV`; the second is decoding the
+//! **system-NMI source** out of `SYSSNIV` for the `SYSNMI` vector
+//! ([`read_nmi_iv`]).
 //!
 //! # How `SYSRSTIV` works
 //!
@@ -261,4 +263,95 @@ impl ResetReasons {
     pub fn raw(&self) -> &[u16] {
         &self.raw[..self.len as usize]
     }
+}
+
+/// A single decoded `SYSSNIV` system-NMI source.
+///
+/// System NMIs are the chip-level fault reports that must not be maskable:
+/// GIE does not gate them, and they fire (and wake) from any LPM. Each source
+/// has its own *enable* though — MPU segment violations, the main clients
+/// here, only reach the vector when `MPUSEGIE` is set
+/// ([`crate::mpu::Config::nmi`]).
+///
+/// Discriminant values follow the FR5969 `SYSSNIV` table (TI header names in
+/// parentheses); like [`ResetReason`], reserved values land in
+/// [`Unknown`](NmiSource::Unknown) rather than being dropped.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NmiSource {
+    /// `0x04` — uncorrectable FRAM bit error (`UBDIFG`).
+    FramUncorrectableBit,
+    /// `0x08` — MPU encapsulated-IP segment violation (`MPUSEGPIFG`).
+    MpuSegIp,
+    /// `0x0A` — MPU information-memory segment violation (`MPUSEGIIFG`).
+    MpuSegInfo,
+    /// `0x0C` — MPU main-memory segment 1 violation (`MPUSEG1IFG`).
+    MpuSeg1,
+    /// `0x0E` — MPU main-memory segment 2 violation (`MPUSEG2IFG`).
+    MpuSeg2,
+    /// `0x10` — MPU main-memory segment 3 violation (`MPUSEG3IFG`).
+    MpuSeg3,
+    /// `0x12` — vacant memory access (`VMAIFG`).
+    VacantMemory,
+    /// `0x14` — JTAG mailbox input (`JMBINIFG`).
+    JtagMailboxIn,
+    /// `0x16` — JTAG mailbox output (`JMBOUTIFG`).
+    JtagMailboxOut,
+    /// `0x18` — correctable FRAM bit error (`CBDIFG`).
+    FramCorrectableBit,
+    /// A reserved or unrecognized `SYSSNIV` value, preserved raw.
+    Unknown(u16),
+}
+
+impl NmiSource {
+    /// Decode one raw `SYSSNIV` value. `None` only for `0` ("no source
+    /// pending").
+    pub fn from_iv(iv: u16) -> Option<NmiSource> {
+        Some(match iv {
+            0x00 => return None,
+            0x04 => NmiSource::FramUncorrectableBit,
+            0x08 => NmiSource::MpuSegIp,
+            0x0A => NmiSource::MpuSegInfo,
+            0x0C => NmiSource::MpuSeg1,
+            0x0E => NmiSource::MpuSeg2,
+            0x10 => NmiSource::MpuSeg3,
+            0x12 => NmiSource::VacantMemory,
+            0x14 => NmiSource::JtagMailboxIn,
+            0x16 => NmiSource::JtagMailboxOut,
+            0x18 => NmiSource::FramCorrectableBit,
+            other => NmiSource::Unknown(other),
+        })
+    }
+
+    /// Short human-readable name, for UART reporting without `core::fmt`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            NmiSource::FramUncorrectableBit => "FRAM uncorrectable bit",
+            NmiSource::MpuSegIp => "MPU seg IP",
+            NmiSource::MpuSegInfo => "MPU seg info",
+            NmiSource::MpuSeg1 => "MPU seg 1",
+            NmiSource::MpuSeg2 => "MPU seg 2",
+            NmiSource::MpuSeg3 => "MPU seg 3",
+            NmiSource::VacantMemory => "vacant memory",
+            NmiSource::JtagMailboxIn => "JTAG mailbox in",
+            NmiSource::JtagMailboxOut => "JTAG mailbox out",
+            NmiSource::FramCorrectableBit => "FRAM correctable bit",
+            NmiSource::Unknown(_) => "unknown",
+        }
+    }
+}
+
+/// ISR-side: read-and-consume the highest-priority pending system-NMI source
+/// from `SYSSNIV`, for the `SYSNMI` vector handler.
+///
+/// Same IV convention as `SYSRSTIV`/`RTCIV`: priority-encoded,
+/// consume-on-read, `0` when nothing is pending — loop until `None` to drain
+/// multiple sources. **For MPU sources the consume applies to the vector
+/// slot, not necessarily the `MPUCTL1` flag** — SLAU367 leaves that
+/// interaction unspecified, so the handler must also call
+/// [`crate::mpu::clear_violation_flags`] or the source stays pending. Free
+/// function backed by `steal()`, per the ISR convention: driver structs own
+/// their peripherals, handlers use module-level accessors.
+pub fn read_nmi_iv() -> Option<NmiSource> {
+    let sys = unsafe { pac::Sys::steal() };
+    NmiSource::from_iv(sys.syssniv().read().bits())
 }

@@ -72,7 +72,7 @@
 //!
 //! ```ignore
 //! let clocks = hal::clocks::configure(p.cs);          // SMCLK = 8 MHz
-//! p.pmm.pm5ctl0().modify(|_, w| w.locklpm5().clear_bit());
+//! hal::gpio::unlock_pins(&p.pmm);
 //! let (port1, _port2) = p.port_1_2.split();
 //! let p14 = port1.pin4.into_timer_b_output();         // P1.4 → TB0.1
 //! let pwm = Pwm::new_smclk(p.timer_0_b7, &clocks, 1_000); // ~1 kHz

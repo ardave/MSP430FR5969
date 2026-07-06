@@ -145,7 +145,7 @@ fn main() -> ! {
     // muxes take effect"; on an LPMx.5 wake it is the moment the latched pins
     // hand control back to the (now reconfigured) port registers — and the
     // moment the wake pin's IFG becomes visible.
-    p.pmm.pm5ctl0().modify(|_, w| w.locklpm5().clear_bit());
+    hal::gpio::unlock_pins(&p.pmm);
 
     // Capture the wake evidence immediately, then stand down the GPIO wake so
     // UART traffic on the same pad cannot latch stray flags.

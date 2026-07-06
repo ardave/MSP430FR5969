@@ -40,9 +40,9 @@
 //! sleep; the wake freezes it, contents intact, until
 //! [`crate::rtc::Rtc::attach`] releases it), and the **I/O pins**, which the
 //! PMM latches at their last configuration (`LOCKLPM5`). On wake the pins
-//! *stay* latched until software clears `LOCKLPM5` — reconfigure the ports
-//! first (and re-arm the wake pin's `PxIE` *before* clearing `LOCKLPM5` so
-//! its latched `PxIFG` is delivered), then unlock, so outputs never glitch
+//! *stay* latched until software clears `LOCKLPM5` ([`crate::gpio::unlock_pins`])
+//! — reconfigure the ports first (and re-arm the wake pin's `PxIE` *before*
+//! unlocking so its latched `PxIFG` is delivered), then unlock, so outputs never glitch
 //! through the reboot.
 
 /// Enter **LPM0** with interrupts enabled, and return once an interrupt has
@@ -203,8 +203,9 @@ pub fn enter_lpm3_5(pmm: &crate::pac::Pmm) -> ! {
 /// are armed port-pin edges (`enable_interrupt` on a [`crate::gpio`] input —
 /// the `PxIE` bit acts as the wake enable; no ISR ever runs) and the RST pin.
 /// Before calling: persist state to FRAM and `flush()` the UART. On the
-/// rebooted side, re-arm the pin *before* clearing `LOCKLPM5` and its latched
-/// wake `PxIFG` is delivered for inspection.
+/// rebooted side, re-arm the pin *before* clearing `LOCKLPM5`
+/// ([`crate::gpio::unlock_pins`]) and its latched wake `PxIFG` is delivered
+/// for inspection.
 ///
 /// The same pre-entry race note as [`enter_lpm3_5`] applies: arm the wake pin
 /// immediately before entering.

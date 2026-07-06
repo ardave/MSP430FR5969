@@ -18,6 +18,8 @@ pub mod fram;
 mod fram_addr;
 pub mod gpio;
 pub mod i2c;
+pub mod mpu;
+mod mpu_seg;
 pub mod power;
 pub mod pwm;
 pub mod ref_a;

@@ -62,8 +62,7 @@ fn main() -> ! {
     // MCLK 1 MHz, SMCLK 8 MHz. SMCLK feeds the UART BRCLK and the I2C bit clock.
     let clocks = hal::clocks::configure(p.cs);
 
-    // Unlock GPIO pins (clear LOCKLPM5) so the UART and I2C pin muxes take effect.
-    p.pmm.pm5ctl0().modify(|_, w| w.locklpm5().clear_bit());
+    hal::gpio::unlock_pins(&p.pmm);
 
     // UART (eUSCI_A0) for printing results: 9600 8N1, BRCLK = SMCLK = 8 MHz.
     let serial = p

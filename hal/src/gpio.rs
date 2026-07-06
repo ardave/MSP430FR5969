@@ -408,6 +408,35 @@ pub fn clear_irq<PORT: PortRegs>(pin: u8) {
     critical_section::with(|_| unsafe { clear_bit(PORT::IFG, pin) });
 }
 
+/// Release the chip-wide I/O latch so pin configurations actually reach the
+/// pads. Call once at boot, after configuring pins:
+///
+/// ```ignore
+/// let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+/// // ... configure pins ...
+/// hal::gpio::unlock_pins(&p.pmm);
+/// ```
+///
+/// Out of every BOR-class reset the FR5969 holds all pins in a locked state
+/// (`PM5CTL0.LOCKLPM5`): port-register writes land but have no effect on the
+/// pads until this bit is cleared. On a cold boot the pads sit
+/// high-impedance — the classic symptom of a missing unlock is "my LED/UART
+/// pin mux is configured but nothing happens." After an **LPMx.5 wake** the
+/// same latch is what held the pins at their pre-sleep states through the
+/// power-off (see [`crate::power::enter_lpm3_5`]/[`enter_lpm4_5`]
+/// (crate::power::enter_lpm4_5)), and clearing it is the hand-over moment —
+/// reconfigure the ports first, and re-arm a wake pin's `PxIE` *before*
+/// calling this, or its latched wake `PxIFG` is delivered to a disabled
+/// interrupt and lost.
+///
+/// That ordering is why this is an explicit free function and not folded
+/// into [`GpioExt::split`] or `hal::init`. It takes `&pac::Pmm` because the
+/// latch lives in the PMM, not the ports; `PM5CTL0` has no password byte
+/// (unlike `PMMCTL0`), so the PAC field API is safe here.
+pub fn unlock_pins(pmm: &pac::Pmm) {
+    pmm.pm5ctl0().modify(|_, w| w.locklpm5().clear_bit());
+}
+
 impl<PORT: PortRegs, const N: u8> OutputPin for Pin<PORT, N, Output> {
     fn set_high(&mut self) -> Result<(), Self::Error> {
         unsafe { set_bit(PORT::OUT, N) };

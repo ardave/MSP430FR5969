@@ -38,7 +38,7 @@ fn main() -> ! {
     // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
     let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
     let clocks = hal::clocks::configure(p.cs);
-    p.pmm.pm5ctl0().modify(|_, w| w.locklpm5().clear_bit());
+    hal::gpio::unlock_pins(&p.pmm);
 
     let serial = p
         .usci_a0_uart_mode
