@@ -192,9 +192,8 @@ fn main() -> ! {
     // MCLK 1 MHz, SMCLK 8 MHz (SMCLK feeds the UART BRCLK below).
     let clocks = hal::clocks::configure(p.cs);
 
-    // Unlock GPIO (clear LOCKLPM5) so the UART pin mux takes effect. (The MPU
-    // itself has no pins.)
-    p.pmm.pm5ctl0().modify(|_, w| w.locklpm5().clear_bit());
+    // (The MPU itself has no pins — this is for the UART.)
+    hal::gpio::unlock_pins(&p.pmm);
 
     // UART (eUSCI_A0): 9600 8N1, BRCLK = SMCLK = 8 MHz.
     let serial = p

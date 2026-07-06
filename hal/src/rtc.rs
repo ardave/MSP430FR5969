@@ -51,7 +51,7 @@
 //!
 //! ```ignore
 //! let clocks = hal::clocks::configure_low_power(p.cs); // ACLK = LFXT 32.768 kHz
-//! p.pmm.pm5ctl0().modify(|_, w| w.locklpm5().clear_bit());
+//! hal::gpio::unlock_pins(&p.pmm);
 //! let start = DateTime { year: 2026, month: 6, day: 27, weekday: 6,
 //!                        hour: 9, minute: 30, second: 0 };
 //! let rtc = Rtc::new(p.rtc_b_real_time_clock, &clocks, &start).unwrap();

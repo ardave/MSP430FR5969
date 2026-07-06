@@ -50,8 +50,7 @@ fn main() -> ! {
     // Clock profile: MCLK 1 MHz, SMCLK 8 MHz. SMCLK feeds the UART BRCLK below.
     let clocks = hal::clocks::configure(p.cs);
 
-    // Unlock GPIO pins (clear LOCKLPM5) so the UART pin mux and LED take effect.
-    p.pmm.pm5ctl0().modify(|_, w| w.locklpm5().clear_bit());
+    hal::gpio::unlock_pins(&p.pmm);
 
     // UART (eUSCI_A0): BAUD baud, 8 data bits, no parity, 1 stop bit, with
     // BRCLK = SMCLK = 8 MHz. The frame format is spelled out explicitly (rather
