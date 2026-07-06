@@ -8,6 +8,8 @@ mod adc_cal;
 pub mod aes;
 mod baud;
 pub mod clocks;
+pub mod comp_e;
+mod comp_ladder;
 pub mod crc;
 mod crc_soft;
 pub mod delay;
