@@ -53,26 +53,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a21dea9854beb860f3062d10228ce9b976da520a73474aed3171ec276bc0c032"
 
 [[package]]
-name = "hal"
-version = "0.1.0"
-dependencies = [
- "critical-section",
- "embedded-hal",
- "embedded-hal-nb",
- "embedded-io",
- "embedded-storage",
- "msp430fr5969",
-]
-
-[[package]]
 name = "hal_test_runners"
 version = "0.1.0"
 dependencies = [
  "bme280",
  "critical-section",
- "hal",
  "msp430",
  "msp430-rt",
+ "msp430fr5969-hal",
 ]
 
 [[package]]
@@ -157,6 +145,18 @@ dependencies = [
  "critical-section",
  "msp430-rt",
  "vcell",
+]
+
+[[package]]
+name = "msp430fr5969-hal"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "embedded-hal",
+ "embedded-hal-nb",
+ "embedded-io",
+ "embedded-storage",
+ "msp430fr5969",
 ]
 
 [[package]]

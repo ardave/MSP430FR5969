@@ -1,14 +1,31 @@
 [package]
-name = "hal"
+name = "msp430fr5969-hal"
 version = "0.1.0"
 edition = "2021"
+description = "Hardware abstraction layer (embedded-hal) for the TI MSP430FR5969 microcontroller"
+repository = "https://github.com/ardave/MSP430FR5969"
+documentation = "https://docs.rs/msp430fr5969-hal"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+keywords = ["msp430", "hal", "embedded-hal", "no-std", "ti"]
+categories = ["embedded", "hardware-support", "no-std"]
+
+# docs.rs builds on x86_64 Linux by default; document for the real target with
+# the feature-gated items (rt, critical-section) included. The tier-3 target
+# has no prebuilt core, hence build-std (docs.rs builds on nightly).
+[package.metadata.docs.rs]
+default-target = "msp430-none-elf"
+features = ["rt", "critical-section"]
+cargo-args = ["-Z", "build-std=core"]
 
 [features]
 rt = ["pac/rt"]
 critical-section = ["pac/critical-section", "dep:critical-section"]
 
 [dependencies]
-pac = { path = "../pac", package = "msp430fr5969" }
+# `path` is used by the workspace and stripped on publish; `version` is what
+# the published crate resolves against on crates.io.
+pac = { path = "../pac", package = "msp430fr5969", version = "0.1.0" }
 # Interrupt-enable/flag registers are shared (PxIE, UCAxIE, SFRIE1), so the
 # HAL's enable/disable paths RMW them inside critical_section::with. Optional:
 # only pulled in with the `critical-section` feature, alongside the PAC's

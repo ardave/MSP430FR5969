@@ -76,11 +76,11 @@ jobs:
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@v2
 
-      # The PAC package is named `msp430fr5969` (its crates.io name) even
-      # though it lives in the `pac/` directory -- `-p` matches package names,
-      # not paths.
-      - name: Build libraries (msp430fr5969, hal)
-        run: cargo build -p msp430fr5969 -p hal
+      # The library packages carry their crates.io names (`msp430fr5969`,
+      # `msp430fr5969-hal`) even though they live in the `pac/` and `hal/`
+      # directories -- `-p` matches package names, not paths.
+      - name: Build libraries (msp430fr5969, msp430fr5969-hal)
+        run: cargo build -p msp430fr5969 -p msp430fr5969-hal
 
       - name: Check entire workspace (incl. consumer binaries)
         run: cargo check --workspace
