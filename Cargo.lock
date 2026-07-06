@@ -61,7 +61,7 @@ dependencies = [
  "embedded-hal-nb",
  "embedded-io",
  "embedded-storage",
- "pac",
+ "msp430fr5969",
 ]
 
 [[package]]
@@ -151,13 +151,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nb"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d5439c4ad607c3c23abf66de8c8bf57ba8adcd1f129e699851a6e43935d339d"
-
-[[package]]
-name = "pac"
+name = "msp430fr5969"
 version = "0.1.0"
 dependencies = [
  "critical-section",
@@ -166,12 +160,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nb"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d5439c4ad607c3c23abf66de8c8bf57ba8adcd1f129e699851a6e43935d339d"
+
+[[package]]
 name = "pac_consumer"
 version = "0.1.0"
 dependencies = [
  "msp430",
  "msp430-rt",
- "pac",
+ "msp430fr5969",
 ]
 
 [[package]]

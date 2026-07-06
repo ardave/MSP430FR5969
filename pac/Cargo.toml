@@ -1,7 +1,14 @@
 [package]
-name = "pac"
+name = "msp430fr5969"
 version = "0.1.0"
 edition = "2021"
+description = "Peripheral access crate for the TI MSP430FR5969 microcontroller"
+repository = "https://github.com/ardave/MSP430FR5969"
+documentation = "https://docs.rs/msp430fr5969"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+keywords = ["msp430", "svd2rust", "no-std", "ti", "microcontroller"]
+categories = ["embedded", "hardware-support", "no-std"]
 
 [features]
 # Enabling `rt` pulls in msp430-rt (the reset handler, RAM init, vector-table
