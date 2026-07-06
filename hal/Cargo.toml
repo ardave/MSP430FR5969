@@ -8,7 +8,7 @@ rt = ["pac/rt"]
 critical-section = ["pac/critical-section", "dep:critical-section"]
 
 [dependencies]
-pac = { path = "../pac" }
+pac = { path = "../pac", package = "msp430fr5969" }
 # Interrupt-enable/flag registers are shared (PxIE, UCAxIE, SFRIE1), so the
 # HAL's enable/disable paths RMW them inside critical_section::with. Optional:
 # only pulled in with the `critical-section` feature, alongside the PAC's

@@ -4,7 +4,7 @@ name: CI
 #
 # WHAT THIS WORKFLOW DOES
 #   - firmware job  : compiles the workspace for the `msp430-none-elf` target.
-#                     The `pac` and `hal` library crates are fully built (rlibs,
+#                     The PAC (`msp430fr5969`) and `hal` library crates are fully built (rlibs,
 #                     real codegen); the whole workspace -- including the
 #                     `pac_consumer` / `hal_consumer` binaries -- is type-checked
 #                     with `cargo check`.
@@ -76,8 +76,11 @@ jobs:
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Build libraries (pac, hal)
-        run: cargo build -p pac -p hal
+      # The PAC package is named `msp430fr5969` (its crates.io name) even
+      # though it lives in the `pac/` directory -- `-p` matches package names,
+      # not paths.
+      - name: Build libraries (msp430fr5969, hal)
+        run: cargo build -p msp430fr5969 -p hal
 
       - name: Check entire workspace (incl. consumer binaries)
         run: cargo check --workspace
