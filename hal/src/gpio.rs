@@ -30,6 +30,13 @@ pub struct Analog;
 /// [`crate::pwm`] for the pin↔channel mapping.
 pub struct TimerB;
 
+/// Timer_A capture input mode: the pin feeds a Timer_A capture/compare
+/// channel's `CCInA` input rather than the GPIO input latch. Selecting it
+/// (`SEL1 = 0, SEL0 = 1` with the direction set to **input**, per datasheet
+/// SLAS704G Tables 6-49/6-50) lets the timer timestamp the pin's edges in
+/// hardware. See [`crate::capture`] for the pin↔channel mapping.
+pub struct TimerA;
+
 /// No pull resistor (floating input).
 pub struct Floating;
 
@@ -288,6 +295,26 @@ impl<PORT: PortRegs, const N: u8, MODE> Pin<PORT, N, MODE> {
     pub fn into_timer_b_output(self) -> Pin<PORT, N, TimerB> {
         unsafe {
             set_bit(PORT::DIR, N); // output: the timer drives the pad
+            clear_bit(PORT::REN, N);
+            select_secondary::<PORT>(N);
+        }
+        Pin::new()
+    }
+
+    /// Configure as a **Timer_A capture input** (`TAx.CCInA`).
+    ///
+    /// Selects the same module function as [`into_timer_b_output`](Pin::
+    /// into_timer_b_output) (`SEL0 = 1, SEL1 = 0`) but with the direction set
+    /// to **input** — for a timer pin, `PxDIR` is what picks the capture-input
+    /// role over the compare-output role (datasheet SLAS704G Tables 6-49/6-50).
+    /// No pull resistor: a capture source drives the line. The resulting
+    /// [`Pin<_, _, TimerA>`] is what [`crate::capture::CaptureTimer::
+    /// capture_pin`] accepts; only pins wired to a Timer_A capture channel
+    /// implement [`crate::capture::CapturePin`], so the channel number is
+    /// correct by construction.
+    pub fn into_timer_a_capture(self) -> Pin<PORT, N, TimerA> {
+        unsafe {
+            clear_bit(PORT::DIR, N); // input: the timer listens to the pad
             clear_bit(PORT::REN, N);
             select_secondary::<PORT>(N);
         }
