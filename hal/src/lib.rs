@@ -7,6 +7,8 @@ pub mod adc;
 mod adc_cal;
 pub mod aes;
 mod baud;
+pub mod capture;
+mod capture_math;
 pub mod clocks;
 pub mod comp_e;
 mod comp_ladder;

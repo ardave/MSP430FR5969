@@ -16,6 +16,7 @@ mod adc_tests;
 mod adc_irq_tests;
 mod adc_dma_tests;
 mod accel_tests;
+mod capture_tests;
 mod comp_tests;
 mod mpu_tests;
 mod dma_tests;
@@ -33,11 +34,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Starting Tests");
 
-    let suites: [(&str, fn() -> Result<(), Box<dyn Error>>); 20] = [
+    let suites: [(&str, fn() -> Result<(), Box<dyn Error>>); 21] = [
         ("serial_port", serial_port_tests::run),
         ("serial_irq", serial_irq_tests::run),
         ("dma", dma_tests::run),
         ("accel", accel_tests::run),
+        ("capture", capture_tests::run),
         ("comp", comp_tests::run),
         ("mpu", mpu_tests::run),
         ("adc", adc_tests::run),
@@ -64,6 +66,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if wanted("spi") && !only.is_empty() {
         spi_tests::run()?;
+    }
+    // capture_jumper is interactive (PWM-loopback-jumper prompt); by name only.
+    // (`capture` above is the hands-free variant: PWM verdicts may SKIP.)
+    if wanted("capture_jumper") && !only.is_empty() {
+        capture_tests::run_with_jumper()?;
     }
 
     Ok(())
