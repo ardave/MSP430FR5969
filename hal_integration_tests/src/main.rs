@@ -17,6 +17,7 @@ mod adc_irq_tests;
 mod adc_dma_tests;
 mod accel_tests;
 mod capture_tests;
+mod clock_speed_tests;
 mod comp_tests;
 mod mpu_tests;
 mod dma_tests;
@@ -34,12 +35,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Starting Tests");
 
-    let suites: [(&str, fn() -> Result<(), Box<dyn Error>>); 21] = [
+    let suites: [(&str, fn() -> Result<(), Box<dyn Error>>); 22] = [
         ("serial_port", serial_port_tests::run),
         ("serial_irq", serial_irq_tests::run),
         ("dma", dma_tests::run),
         ("accel", accel_tests::run),
         ("capture", capture_tests::run),
+        ("clock_speed", clock_speed_tests::run),
         ("comp", comp_tests::run),
         ("mpu", mpu_tests::run),
         ("adc", adc_tests::run),
