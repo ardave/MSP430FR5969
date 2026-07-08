@@ -36,6 +36,18 @@
 //! only while `RTCRDY` stays set across the whole read, retrying otherwise, so it
 //! never returns a torn value.
 //!
+//! # The alarm
+//!
+//! RTC_B has one hardware alarm: four byte-wide registers (minute, hour,
+//! day-of-week, day-of-month), each with a per-field enable, compared against
+//! the calendar at every minute increment — all enabled fields matching
+//! latches `RTCAIFG` (once). The enabled subset picks the recurrence
+//! (minute-only = hourly, minute+hour = daily, …). Program it with
+//! [`Rtc::set_alarm`] ([`Alarm`]'s validation/encoding math lives in
+//! `rtc_alarm.rs` and is host-tested), poll it with [`alarm_irq_pending`], or
+//! get the `RTC` vector via [`Rtc::enable_alarm_interrupt`] ([`read_iv`]
+//! returns `0x06`). Because the RTC counts LFXT on ACLK, an alarm wakes LPM3.
+//!
 //! # No `embedded-hal` trait?
 //!
 //! `embedded-hal` 1.0 has **no RTC/clock trait** — its modules are `digital`,
@@ -63,6 +75,11 @@
 
 use crate::clocks::Clocks;
 use crate::pac;
+
+// The alarm field-validation/register-encoding math lives in `rtc_alarm.rs`
+// (dependency-free, host-tested in `unit_tests/`); re-exported here so
+// consumers only ever see `hal::rtc::Alarm`.
+pub use crate::rtc_alarm::{alarm_matches, Alarm, AlarmError};
 
 /// A wall-clock date and time, all fields **binary** (not BCD).
 ///
@@ -248,6 +265,60 @@ impl Rtc {
         self.rtc.rtcctl01().modify(|_, w| w.rtcrdyie().set_bit());
     }
 
+    /// Program the **alarm**: `RTCAIFG` latches when the calendar reaches an
+    /// instant where every enabled field of `alarm` matches (see [`Alarm`] —
+    /// the enabled subset picks the recurrence: minute-only = hourly,
+    /// minute+hour = daily, and so on).
+    ///
+    /// Follows SLAU367P's reprogramming procedure: the alarm interrupt enable
+    /// is cleared first (so no ISR can fire off a half-written alarm), the
+    /// four alarm registers are written, and `RTCAIFG` is cleared **last** —
+    /// a mix of old and new fields can spuriously match during the update (the
+    /// comparison runs at each minute increment), and the trailing clear
+    /// scrubs any such latch. Consequence: the alarm is armed for matches
+    /// *after* this call returns; poll [`alarm_irq_pending`] or call
+    /// [`enable_alarm_interrupt`](Rtc::enable_alarm_interrupt) to be notified.
+    /// The calendar keeps running throughout (the alarm registers are not
+    /// behind `RTCHOLD`).
+    ///
+    /// Returns the field that was out of range ([`AlarmError`]) with the
+    /// hardware untouched; an alarm with no enabled field is rejected as
+    /// [`AlarmError::NoFieldEnabled`] since it could never fire.
+    pub fn set_alarm(&mut self, alarm: &Alarm) -> Result<(), AlarmError> {
+        let regs = crate::rtc_alarm::encode_alarm(alarm)?;
+        self.rtc.rtcctl01().modify(|_, w| w.rtcaie().clear_bit());
+        self.rtc.rtcamin().write(|w| unsafe { w.bits(regs.minute) });
+        self.rtc.rtcahour().write(|w| unsafe { w.bits(regs.hour) });
+        self.rtc.rtcadow().write(|w| unsafe { w.bits(regs.weekday) });
+        self.rtc.rtcaday().write(|w| unsafe { w.bits(regs.day) });
+        self.rtc.rtcctl01().modify(|_, w| w.rtcaifg().clear_bit());
+        Ok(())
+    }
+
+    /// Disarm the alarm entirely: clears the interrupt enable, every field's
+    /// `AE` bit (so nothing is compared anymore), and a pending `RTCAIFG`.
+    pub fn disable_alarm(&mut self) {
+        self.rtc.rtcctl01().modify(|_, w| w.rtcaie().clear_bit());
+        self.rtc.rtcamin().write(|w| unsafe { w.bits(0) });
+        self.rtc.rtcahour().write(|w| unsafe { w.bits(0) });
+        self.rtc.rtcadow().write(|w| unsafe { w.bits(0) });
+        self.rtc.rtcaday().write(|w| unsafe { w.bits(0) });
+        self.rtc.rtcctl01().modify(|_, w| w.rtcaifg().clear_bit());
+    }
+
+    /// Enable the **alarm** interrupt (`RTCAIE`): a programmed alarm match
+    /// ([`set_alarm`](Rtc::set_alarm)) fires the single `RTC` vector, where
+    /// [`read_iv`] returns `0x06` (hardware-observed 2026-07-07 — one slot
+    /// below where a casual reading of the generic RTC_B chapter puts it; see
+    /// [`read_iv`] for the full table). An already-latched `RTCAIFG` fires the ISR
+    /// immediately on enable — call this right after `set_alarm` (which
+    /// leaves the flag clean) to only hear about future matches. The RTC
+    /// keeps its clock (LFXT on ACLK) in LPM3, so an alarm wakes LPM3 given a
+    /// `#[interrupt(wake_cpu)]` handler.
+    pub fn enable_alarm_interrupt(&self) {
+        self.rtc.rtcctl01().modify(|_, w| w.rtcaie().set_bit());
+    }
+
     /// Release the underlying peripheral. The calendar is left running.
     pub fn free(self) -> pac::RtcBRealTimeClock {
         self.rtc
@@ -290,8 +361,11 @@ impl Rtc {
 /// The RTC's several sources share one vector; reading `RTCIV` returns a small
 /// number identifying the highest-priority pending source and **auto-clears that
 /// flag**. Provided as a free function because the ISR does not own the [`Rtc`].
-/// Common values: `0x04` = `RTCRDYIFG` (per-second), `0x06` = `RTCTEVIFG` (time
-/// event).
+/// Values (TI's `msp430fr5969.h` `RTCIV_*` constants; the alarm slot
+/// hardware-observed 2026-07-07): `0x02` = `RTCRDYIFG` (per-second), `0x04` =
+/// `RTCTEVIFG` (time event), `0x06` = `RTCAIFG` (alarm), `0x08`/`0x0A` =
+/// prescaler 0/1, `0x0C` = oscillator fault (the *lowest*-priority slot, not
+/// the highest).
 pub fn read_iv() -> u16 {
     // SAFETY: a stolen handle reading the self-clearing RTCIV — the architected
     // way to service the shared RTC vector; touches no state the Rtc owner writes.
@@ -321,4 +395,29 @@ pub fn clear_event_irq() {
     // disjoint from the calendar/control bits the Rtc owner manages.
     let rtc = unsafe { pac::RtcBRealTimeClock::steal() };
     rtc.rtcctl01().modify(|_, w| w.rtctevifg().clear_bit());
+}
+
+/// Is the alarm interrupt flag (`RTCAIFG`) latched?
+///
+/// The alarm sibling of [`event_irq_pending`], serving the same two callers:
+/// polled use (an alarm armed by [`Rtc::set_alarm`] with the interrupt left
+/// off — the flag latches regardless of `RTCAIE`), and the post-LPM3.5-wake
+/// check, where the flag that woke the part is still latched but its enable
+/// was cleared by the wake so `RTCIV` reads 0. Non-destructive; clear with
+/// [`clear_alarm_irq`].
+pub fn alarm_irq_pending() -> bool {
+    // SAFETY: a stolen handle reading one interrupt flag — no state written.
+    let rtc = unsafe { pac::RtcBRealTimeClock::steal() };
+    rtc.rtcctl01().read().rtcaifg().bit_is_set()
+}
+
+/// Clear the alarm interrupt flag (`RTCAIFG`) — for polled alarm consumers
+/// and for `RTC` ISR handlers that do not read [`read_iv`]. The alarm stays
+/// armed (the `AE` bits are untouched) and will latch again at the next
+/// matching minute increment.
+pub fn clear_alarm_irq() {
+    // SAFETY: a stolen handle clearing only RTCAIFG via read-modify-write —
+    // disjoint from the calendar/control bits the Rtc owner manages.
+    let rtc = unsafe { pac::RtcBRealTimeClock::steal() };
+    rtc.rtcctl01().modify(|_, w| w.rtcaifg().clear_bit());
 }

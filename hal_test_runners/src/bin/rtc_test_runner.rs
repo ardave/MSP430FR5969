@@ -1,7 +1,12 @@
 #![no_std]
 #![no_main]
+// msp430-rt's #[interrupt] emits a handler with the `extern "msp430-interrupt"`
+// ABI (RETI, not RET); the `wake_cpu` variant additionally emits inline asm to
+// clear the low-power bits in the stacked SR. Both are still nightly-gated.
+#![feature(abi_msp430_interrupt)]
+#![feature(asm_experimental_arch)]
 
-//! RTC_B integration fixture for the `hal::rtc` calendar driver.
+//! RTC_B integration fixture for the `hal::rtc` calendar + alarm driver.
 //!
 //! A self-checking sibling of the human-facing `rtc_clock` demo: instead of just
 //! printing the wall clock, it runs a startup self-check and reports a framed
@@ -11,8 +16,8 @@
 //! need the populated 32.768 kHz LFXT crystal (see below).
 //!
 //! ```text
-//! cargo +nightly build --bin rtc_test
-//! DSLite load ... -f target/msp430-none-elf/debug/rtc_test
+//! cargo +nightly build --bin rtc_test_runner
+//! DSLite load ... -f target/msp430-none-elf/debug/rtc_test_runner
 //! ```
 //!
 //! # What it checks
@@ -30,9 +35,35 @@
 //!    that is stuck, running off the wrong source, or not counting at 1 Hz fails
 //!    here — the two oscillators cross-check each other.
 //!
-//! Both verdicts are computed **once** at startup; the loop just re-emits the
+//! 3. **Alarm, polled (`RTC ALARM ARM/EARLY/FIRE/ONCE`).** The clock is re-set
+//!    to 09:30:56 and a daily alarm programmed for 09:31 — four seconds out, the
+//!    fixture picking the time so the minute-boundary-granular alarm fires
+//!    seconds (not minutes) later. `ARM`: `set_alarm` accepts the alarm and
+//!    leaves `RTCAIFG` clean. `EARLY`: ~1.5 s later (09:30:58) the flag is
+//!    *still* clear — an alarm that latches immediately (e.g. comparing against
+//!    the wrong fields, or a stale flag surviving `set_alarm`) fails here.
+//!    `FIRE`: polling `alarm_irq_pending()` sees the flag latch within the ~8 s
+//!    budget (expected ~2.5 s in, at the 09:31:00 minute increment). `ONCE`:
+//!    after `clear_alarm_irq()` the flag stays clear through the rest of the
+//!    matched minute — the hardware latches on the increment-into-match, not
+//!    continuously while matched.
+//!
+//! 4. **Alarm interrupt + LPM3 wake (`RTC ALARM IRQ`).** The clock is re-set to
+//!    09:31:56, the alarm to 09:32, `RTCAIE` enabled, and the part dropped into
+//!    **LPM3** (DCO and SMCLK gated; only the crystal runs). The alarm is the
+//!    only interrupt armed, so *returning at all* proves it woke the part; the
+//!    `RTC` ISR (`#[interrupt(wake_cpu)]`) records `rtc::read_iv()`, which must
+//!    be `0x06` (`RTCAIFG`'s slot per TI's `RTCIV_RTCAIFG`, hardware-observed
+//!    2026-07-07) exactly once, and the IV read must have auto-cleared the
+//!    flag. This is the flagship alarm use — wake from deep sleep at a
+//!    wall-clock time — end to end.
+//!
+//! All verdicts are computed **once** at startup; the loop just re-emits the
 //! fixed verdict lines and toggles the **GREEN** LED as a heartbeat. A steady
-//! **RED** LED means a check failed.
+//! **RED** LED means a check failed. If the alarm interrupt never fires, the
+//! part stays in LPM3 and no burst is ever emitted — the host runner's deadline
+//! turns that hang into a clean failure (the same "reaching the verdict proves
+//! it returned" logic as the deep-sleep fixture).
 //!
 //! # Hardware requirement: the 32.768 kHz crystal
 //!
@@ -50,21 +81,34 @@
 //! the `DSLite load` reset and still catch a complete cycle. Each cycle, over UART:
 //!
 //! ```text
-//! now: 2026-06-27 09:30:07     (human-readable info, skipped by host)
+//! now: 2026-06-27 09:32:07      (human-readable info, skipped by host)
+//! alarm fire_ms=2600 iv=8 n=1   (human-readable info, skipped by host)
 //! RTC_TEST_BEGIN
-//! RTC SET OK                    (or `RTC SET FAIL` if the read-back differs)
-//! RTC TICK OK                   (or `RTC TICK FAIL` if the calendar did not advance)
+//! RTC SET OK                    (or `... FAIL`)
+//! RTC TICK OK
+//! RTC ALARM ARM OK
+//! RTC ALARM EARLY OK
+//! RTC ALARM FIRE OK
+//! RTC ALARM ONCE OK
+//! RTC ALARM IRQ OK
 //! RTC_TEST_END
 //! ```
 
+use core::cell::Cell;
+
+use critical_section::Mutex;
 use hal::delay::Delay;
 use hal::embedded_hal::delay::DelayNs as _;
 use hal::embedded_hal::digital::OutputPin;
 use hal::embedded_io::Write as _;
 use hal::gpio::GpioExt;
-use hal::rtc::{DateTime, Rtc};
+use hal::rtc::{Alarm, DateTime, Rtc};
 use hal::serial::{Config as UartConfig, SerialExt};
 use msp430_rt::entry;
+
+// The #[msp430_rt::interrupt] macro validates the handler name against an
+// `interrupt::NAME` path.
+use hal::interrupt;
 
 // Force-link the msp430 crate so its critical-section impl symbols resolve for
 // pac's Peripherals::take().
@@ -80,6 +124,32 @@ const START: DateTime = DateTime {
     minute: 30,
     second: 0,
 };
+
+/// START's date at a different time of day — the alarm phases re-set the clock
+/// to land just shy of a minute boundary so the minute-granular alarm fires
+/// seconds later.
+const fn start_date_at(hour: u8, minute: u8, second: u8) -> DateTime {
+    DateTime { hour, minute, second, ..START }
+}
+
+/// What the `RTC` ISR observed: the last `RTCIV` value read, and how many
+/// times the vector fired. Only the alarm interrupt is ever enabled, so one
+/// firing with IV = 0x08 is the exactly-once pass state.
+static ALARM_IV: Mutex<Cell<u16>> = Mutex::new(Cell::new(0));
+static ALARM_COUNT: Mutex<Cell<u8>> = Mutex::new(Cell::new(0));
+
+/// RTC interrupt: consume the IV (the RTCIV read auto-clears the served
+/// flag — RTCAIFG here) and record it. `wake_cpu` clears the LPM bits in the
+/// stacked SR so `enter_lpm3()` returns to main.
+#[msp430_rt::interrupt(wake_cpu)]
+fn RTC() {
+    let iv = hal::rtc::read_iv();
+    critical_section::with(|cs| {
+        ALARM_IV.borrow(cs).set(iv);
+        let count = ALARM_COUNT.borrow(cs);
+        count.set(count.get().saturating_add(1));
+    });
+}
 
 /// Firmware entry point.
 #[entry]
@@ -109,7 +179,7 @@ fn main() -> ! {
     tx.write_all(b"\r\nMSP430FR5969 RTC_B self-check\r\n").ok();
 
     // Start the calendar; refuse (and report) if the crystal did not come up.
-    let rtc = match Rtc::new(p.rtc_b_real_time_clock, &clocks, &START) {
+    let mut rtc = match Rtc::new(p.rtc_b_real_time_clock, &clocks, &START) {
         Ok(rtc) => rtc,
         Err(_) => {
             // No 32.768 kHz crystal — emit a framed FAIL burst forever so the host
@@ -144,35 +214,96 @@ fn main() -> ! {
     let elapsed = (after.second as i16 - before.second as i16).rem_euclid(60);
     let tick_ok = (2..=4).contains(&elapsed);
 
+    // --- 3. Alarm, polled ----------------------------------------------------
+    // The alarm compares at each *minute* increment, so a naive test would wait
+    // up to a minute; instead re-set the clock to 4 s before the boundary the
+    // alarm names. Daily alarm (hour + minute enabled) so a stuck wildcard
+    // can't pass by matching some other hour.
+    rtc.set(&start_date_at(9, 30, 56));
+    let arm_ok = rtc.set_alarm(&Alarm::daily_at(9, 31)).is_ok()
+        && !hal::rtc::alarm_irq_pending();
+
+    // ~1.5 s in (09:30:58) the boundary has not been reached: the flag must
+    // still be clear. Catches an alarm latched by the arming itself.
+    delay.delay_ms(1500);
+    let early_ok = !hal::rtc::alarm_irq_pending();
+
+    // Poll for the latch. Expected ~2.5 s in (the 09:31:00 increment); the 8 s
+    // budget is deliberately generous — FIRE checks *that* it latches, EARLY
+    // already checked it wasn't instant, and TICK already timed the crystal.
+    let mut fire_ms: u32 = 0;
+    let mut fired = false;
+    while fire_ms < 8000 {
+        delay.delay_ms(100);
+        fire_ms += 100;
+        if hal::rtc::alarm_irq_pending() {
+            fired = true;
+            break;
+        }
+    }
+    let fire_ok = fired;
+
+    // Exactly-once: the latch happens on the increment *into* the match, not
+    // continuously while the minute matches. Cleared, it must stay clear for
+    // the rest of the matched minute.
+    hal::rtc::clear_alarm_irq();
+    delay.delay_ms(2500);
+    let once_ok = fired && !hal::rtc::alarm_irq_pending();
+
+    // --- 4. Alarm interrupt + LPM3 wake --------------------------------------
+    // Same trick, next boundary: alarm at 09:32 with the clock at 09:31:56,
+    // this time delivered as an interrupt to a sleeping part. The alarm is the
+    // only enabled interrupt, so returning from enter_lpm3() at all proves the
+    // wake; the ISR's IV must be RTCAIFG's slot (0x06), exactly once.
+    rtc.set(&start_date_at(9, 31, 56));
+    rtc.set_alarm(&Alarm::daily_at(9, 32)).ok();
+    rtc.enable_alarm_interrupt();
+    // SMCLK stops in LPM3 — flush so the sleep doesn't cut a character short.
+    tx.flush().ok();
+    hal::power::enter_lpm3();
+    let (irq_iv, irq_count) =
+        critical_section::with(|cs| (ALARM_IV.borrow(cs).get(), ALARM_COUNT.borrow(cs).get()));
+    // 0x06 = RTCIV_RTCAIFG (TI msp430fr5969.h; first HW-observed 2026-07-07 —
+    // the run that corrected the driver's earlier off-by-one-slot IV table).
+    // The IV read in the ISR auto-clears RTCAIFG; a flag still pending here
+    // would mean the demux read didn't consume it.
+    let irq_ok = irq_iv == 0x06 && irq_count == 1 && !hal::rtc::alarm_irq_pending();
+    // Disarm so the daily alarm can't refire into the report loop.
+    rtc.disable_alarm();
+
+    let all_ok = set_ok && tick_ok && arm_ok && early_ok && fire_ok && once_ok && irq_ok;
+
     // A self-delimited verdict burst, repeated once per second so the host runner
     // can attach at any time after the DSLite reset and still frame a full
     // BEGIN..END cycle. GREEN toggles each cycle as a heartbeat; steady RED means
     // a check failed.
     let mut on = false;
     loop {
-        // Human-readable info line (the host skips everything up to BEGIN): the
-        // live wall clock, observable over `screen`.
+        // Human-readable info lines (the host skips everything up to BEGIN): the
+        // live wall clock and the alarm observations, observable over `screen`.
         let now = rtc.now();
         tx.write_all(b"now: ").ok();
         print_datetime(&mut tx, &now);
+        tx.write_all(b"alarm fire_ms=").ok();
+        write_dec(&mut tx, fire_ms);
+        tx.write_all(b" iv=").ok();
+        write_dec(&mut tx, irq_iv as u32);
+        tx.write_all(b" n=").ok();
+        write_dec(&mut tx, irq_count as u32);
+        tx.write_all(b"\r\n").ok();
 
         // Fixed, greppable verdict lines framed by BEGIN/END.
         tx.write_all(b"RTC_TEST_BEGIN\r\n").ok();
-        tx.write_all(if set_ok {
-            b"RTC SET OK\r\n" as &[u8]
-        } else {
-            b"RTC SET FAIL\r\n"
-        })
-        .ok();
-        tx.write_all(if tick_ok {
-            b"RTC TICK OK\r\n" as &[u8]
-        } else {
-            b"RTC TICK FAIL\r\n"
-        })
-        .ok();
+        verdict(&mut tx, b"RTC SET", set_ok);
+        verdict(&mut tx, b"RTC TICK", tick_ok);
+        verdict(&mut tx, b"RTC ALARM ARM", arm_ok);
+        verdict(&mut tx, b"RTC ALARM EARLY", early_ok);
+        verdict(&mut tx, b"RTC ALARM FIRE", fire_ok);
+        verdict(&mut tx, b"RTC ALARM ONCE", once_ok);
+        verdict(&mut tx, b"RTC ALARM IRQ", irq_ok);
         tx.write_all(b"RTC_TEST_END\r\n").ok();
 
-        if set_ok && tick_ok {
+        if all_ok {
             red_led.set_low().ok();
             on = !on;
             if on {
@@ -187,6 +318,12 @@ fn main() -> ! {
 
         delay.delay_ms(1000);
     }
+}
+
+/// Write one `<name> OK\r\n` / `<name> FAIL\r\n` verdict line.
+fn verdict<W: hal::embedded_io::Write>(tx: &mut W, name: &[u8], ok: bool) {
+    tx.write_all(name).ok();
+    tx.write_all(if ok { b" OK\r\n" as &[u8] } else { b" FAIL\r\n" }).ok();
 }
 
 /// Print `YYYY-MM-DD HH:MM:SS\r\n`.

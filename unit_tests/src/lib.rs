@@ -21,5 +21,6 @@ mod comp_ladder;
 mod crc_soft;
 mod fram_addr;
 mod mpu_seg;
+mod rtc_alarm;
 mod rx_queue;
 mod ticks;
