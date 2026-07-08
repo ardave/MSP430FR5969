@@ -8,17 +8,36 @@
 //! of hard-coding a number — so there is exactly one place that "knows" how fast
 //! the chip runs.
 //!
-//! # Two profiles
+//! # Four profiles
 //!
 //! Pick **one** at startup (each consumes the CS peripheral):
 //!
 //! - [`configure`] — **fine resolution, full power.** SMCLK at the full 8 MHz
-//!   DCO (125 ns peripheral ticks); ACLK parked on the VLO. Not sleep-oriented.
+//!   DCO (125 ns peripheral ticks), MCLK = 1 MHz; ACLK parked on the VLO. Not
+//!   sleep-oriented.
 //! - [`configure_low_power`] — **sleep-friendly.** ACLK sourced from the
 //!   32.768 kHz **LFXT crystal**, which keeps running in LPM3 while the DCO,
 //!   MCLK, and SMCLK are all off — so a timer clocked on ACLK can wake the part
 //!   from deep sleep, accurately and at microamp power. Falls back to the VLO if
 //!   the crystal does not start.
+//! - [`configure_high_speed`] — **high-range DCO, zero wait states.** DCO at
+//!   16 MHz: SMCLK = 16 MHz (62.5 ns peripheral ticks), MCLK = 8 MHz — the
+//!   fastest CPU that still reads FRAM with no wait states. ACLK on the VLO.
+//! - [`configure_max_speed`] — **everything at 16 MHz.** MCLK crosses the 8 MHz
+//!   FRAM ceiling, so this profile programs **one FRAM wait state** before
+//!   touching the clock (see below). ACLK on the VLO.
+//!
+//! # FRAM wait states are not a public API on purpose
+//!
+//! FRAM cannot be read faster than 8 MHz; above that, `FRCTL0.NWAITS` must
+//! insert CPU wait states or instruction fetches return garbage (a crash that
+//! looks like random memory corruption). The safe ordering is fixed: **raise
+//! wait states, then raise MCLK** (and the reverse to slow down). Rather than
+//! trust every caller to remember that, the wait-state write lives *inside*
+//! [`configure_max_speed`], sequenced before the DCO switch — the same
+//! fused-ordering pattern as [`crate::init`] (watchdog before `take()`) and
+//! the GPIO interrupt arming order. At 8 MHz and below the reset value
+//! (`NWAITS = 0`) is correct and nothing needs configuring.
 //!
 //! # Why LFXT is the "low power" clock
 //!
@@ -50,6 +69,10 @@ const CSKEY_H: u8 = 0xA5; // unlock value; any other value re-locks
 // so the DCO frequency is unchanged (no settling needed); written explicitly to
 // own the configuration.
 const DCOFSEL_6: u16 = 0x000C;
+// DCOFSEL=4 with DCORSEL=1 (high range) = 16 MHz, factory-trimmed ±3.5% like
+// the low-range taps (datasheet SLAS704G fDCO16).
+const DCOFSEL_4: u16 = 0x0008;
+const DCORSEL: u16 = 0x0040;
 
 // --- CSCTL2: clock source selects ---
 const SELM_DCOCLK: u16 = 0x0003; // MCLK  <- DCOCLK
@@ -58,10 +81,24 @@ const SELA_VLOCLK: u16 = 0x0100; // ACLK  <- VLOCLK
 const SELA_LFXTCLK: u16 = 0x0000; // ACLK <- LFXTCLK (32.768 kHz crystal)
 
 // --- CSCTL3: source dividers ---
+const DIVM_1: u16 = 0x0000; // MCLK  = DCO / 1
+const DIVM_2: u16 = 0x0001; // MCLK  = DCO / 2
 const DIVM_8: u16 = 0x0003; // MCLK  = DCO / 8 = 1 MHz
 const DIVS_1: u16 = 0x0000; // SMCLK = DCO / 1 = 8 MHz
 const DIVS_8: u16 = 0x0030; // SMCLK = DCO / 8 = 1 MHz
 const DIVA_1: u16 = 0x0000; // ACLK  = source / 1
+
+// --- FRCTL0: FRAM controller wait states ---
+// Password-protected exactly like CSCTL0/WDTCTL/PMMCTL0: 0xA5 into the HIGH
+// byte opens the register file, any other value closes it, and a write while
+// closed is a PUC (`sys::ResetReason` 0x1A decodes it). Byte-lane access for
+// the same reason as the CS password. NWAITS is bits 6:4 of the low byte;
+// each wait state buys 8 MHz of MCLK (NWAITS=0 → ≤8 MHz, NWAITS=1 → ≤16 MHz).
+const FRCTL0_L: usize = 0x0140;
+const FRCTL0_H: usize = 0x0141;
+const FRKEY_H: u8 = 0xA5;
+const NWAITS_MASK: u8 = 0x70;
+const NWAITS_1: u8 = 0x10;
 
 // --- CSCTL4 (LFXT control) / CSCTL5 (fault flags) ---
 const LFXTOFF: u16 = 0x0001; // 1 = LFXT off; clear to enable
@@ -77,6 +114,7 @@ const PJ_XT1: u8 = (1 << 4) | (1 << 5); // select the crystal function on PJ.4/.
 
 // --- Nominal frequencies ---
 const DCO_HZ: u32 = 8_000_000;
+const DCO_HIGH_HZ: u32 = 16_000_000;
 const LFXT_HZ: u32 = 32_768; // watch crystal
 const VLO_HZ: u32 = 9_400; // VLO typical; approximate only
 
@@ -154,6 +192,91 @@ pub fn configure(cs: pac::Cs) -> Clocks {
         smclk: DCO_HZ / 1,
         aclk: VLO_HZ,
         aclk_source: AclkSource::Vlo,
+    }
+}
+
+/// **High-speed profile.** DCO in its high range at **16 MHz**; SMCLK = 16 MHz
+/// (62.5 ns peripheral ticks — twice [`configure`]'s resolution), **MCLK =
+/// DCO/2 = 8 MHz** (8× [`configure`]'s CPU speed, and the fastest MCLK that
+/// still reads FRAM with **zero wait states**); ACLK parked on the VLO.
+///
+/// Write order inside: the dividers go in *before* the DCO range switch, so
+/// MCLK never exceeds its current wait-state ceiling mid-sequence (with the
+/// old 8 MHz DCO the ÷2 briefly yields 4 MHz, then the range switch lands it
+/// on 8 MHz).
+///
+/// Consumes the CS peripheral so the clock tree is configured exactly once.
+pub fn configure_high_speed(cs: pac::Cs) -> Clocks {
+    unsafe {
+        (CSCTL0_H as *mut u8).write_volatile(CSKEY_H); // unlock
+
+        // Dividers first (see above), then the DCO range/frequency.
+        cs.csctl2()
+            .write(|w| w.bits(SELM_DCOCLK | SELS_DCOCLK | SELA_VLOCLK));
+        cs.csctl3().write(|w| w.bits(DIVM_2 | DIVS_1 | DIVA_1));
+        cs.csctl1().write(|w| w.bits(DCORSEL | DCOFSEL_4));
+
+        (CSCTL0_H as *mut u8).write_volatile(0x00); // lock
+    }
+
+    Clocks {
+        mclk: DCO_HIGH_HZ / 2,
+        smclk: DCO_HIGH_HZ / 1,
+        aclk: VLO_HZ,
+        aclk_source: AclkSource::Vlo,
+    }
+}
+
+/// **Maximum-speed profile.** MCLK *and* SMCLK at the full **16 MHz** DCO —
+/// the device's rated ceiling. MCLK above 8 MHz outruns the FRAM, so this
+/// profile programs **one FRAM wait state** (`FRCTL0.NWAITS = 1`) *before*
+/// switching the clock; the ordering is fused here so it cannot be gotten
+/// wrong at a call site (see the module docs). The CPU stalls one cycle on
+/// each FRAM fetch the cache misses, so real throughput gains over
+/// [`configure_high_speed`] are workload-dependent — code running from cache
+/// and all 16 MHz-clocked peripherals get the full 2×.
+///
+/// ACLK parks on the VLO, as in [`configure`].
+///
+/// Consumes the CS peripheral so the clock tree is configured exactly once.
+pub fn configure_max_speed(cs: pac::Cs) -> Clocks {
+    // Wait states FIRST: from this point any MCLK up to 16 MHz is legal.
+    // (An extra wait state at the current slow MCLK merely wastes a cycle.)
+    set_fram_wait_states(NWAITS_1);
+
+    unsafe {
+        (CSCTL0_H as *mut u8).write_volatile(CSKEY_H); // unlock
+
+        cs.csctl2()
+            .write(|w| w.bits(SELM_DCOCLK | SELS_DCOCLK | SELA_VLOCLK));
+        cs.csctl3().write(|w| w.bits(DIVM_1 | DIVS_1 | DIVA_1));
+        cs.csctl1().write(|w| w.bits(DCORSEL | DCOFSEL_4));
+
+        (CSCTL0_H as *mut u8).write_volatile(0x00); // lock
+    }
+
+    Clocks {
+        mclk: DCO_HIGH_HZ,
+        smclk: DCO_HIGH_HZ,
+        aclk: VLO_HZ,
+        aclk_source: AclkSource::Vlo,
+    }
+}
+
+/// Program `FRCTL0.NWAITS` under its password bracket. Private on purpose:
+/// wait states have no meaning apart from the MCLK frequency they license, so
+/// the only callers are the profile functions that own that pairing.
+///
+/// Byte-lane discipline like the CS password: `0xA5` into the high byte opens
+/// the FRAM controller registers, the low-byte RMW touches only the NWAITS
+/// field, and writing the high byte back to zero closes the bracket (a write
+/// while closed is a PUC, so the bracket is never left open).
+fn set_fram_wait_states(nwaits: u8) {
+    unsafe {
+        (FRCTL0_H as *mut u8).write_volatile(FRKEY_H); // unlock
+        let l = FRCTL0_L as *mut u8;
+        l.write_volatile((l.read_volatile() & !NWAITS_MASK) | nwaits);
+        (FRCTL0_H as *mut u8).write_volatile(0x00); // lock
     }
 }
 
