@@ -20,7 +20,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 
 /// Flash the RTC fixture and verify its self-check burst. No external wiring is
 /// involved: RTC_B is on-chip and clocked by the populated 32.768 kHz crystal, so
-/// this validates the load-and-read-back and the 1 Hz advance end-to-end.
+/// this validates the load-and-read-back, the 1 Hz advance, and the alarm
+/// (polled latch semantics + the RTCIV-demuxed interrupt waking LPM3) end-to-end.
 fn test_calendar_self_check() -> Result<(), Box<dyn Error>> {
     deployment::build_and_flash("rtc_test_runner")?;
     verify_self_check_burst()
@@ -29,12 +30,16 @@ fn test_calendar_self_check() -> Result<(), Box<dyn Error>> {
 /// Open the board's UART (8N1) and verify the fixed verdict burst the `rtc_test_runner`
 /// fixture transmits once per second.
 ///
-/// The fixture loads the calendar to a known instant, reads it back, and checks
-/// (against the independent DCO-timed delay) that it advances at 1 Hz, emitting an
-/// `OK` verdict line for each, framed by BEGIN/END markers. A failed check flips a
-/// verdict to `FAIL`, so a body mismatch after BEGIN is a real failure (the fixture
-/// always emits the complete burst). A missing crystal yields a single
-/// `RTC CLOCK FAIL` line, which likewise surfaces as a clean mismatch.
+/// The fixture loads the calendar to a known instant, reads it back, checks
+/// (against the independent DCO-timed delay) that it advances at 1 Hz, then runs
+/// the alarm through a polled fire (arm / not-early / latch / exactly-once) and
+/// an interrupt-driven LPM3 wake, emitting an `OK` verdict line for each, framed
+/// by BEGIN/END markers. A failed check flips a verdict to `FAIL`, so a body
+/// mismatch after BEGIN is a real failure (the fixture always emits the complete
+/// burst); an alarm interrupt that never fires leaves the part asleep in LPM3
+/// with no burst at all, which the deadline below turns into a clean failure. A
+/// missing crystal yields a single `RTC CLOCK FAIL` line, which likewise
+/// surfaces as a clean mismatch.
 fn verify_self_check_burst() -> Result<(), Box<dyn Error>> {
     let port_path = crate::serial::resolve_port()?;
 
@@ -55,16 +60,27 @@ fn verify_self_check_burst() -> Result<(), Box<dyn Error>> {
     // Give the freshly-flashed board a moment to reset and start transmitting.
     thread::sleep(Duration::from_millis(500));
 
-    // The exact verdict lines the fixture emits between its frame markers. Both
-    // are the pass-state strings: the calendar reads back the loaded instant, and
-    // it advances ~3 s over the fixture's startup measurement window.
+    // The exact verdict lines the fixture emits between its frame markers, all
+    // in their pass state: calendar read-back, 1 Hz advance, and the five alarm
+    // checks (accepted+clean arm, no early latch, polled fire at the minute
+    // boundary, exactly-once latching, and the RTCIV=0x06 interrupt that wakes
+    // the part from LPM3).
     const BEGIN: &str = "RTC_TEST_BEGIN";
     const END: &str = "RTC_TEST_END";
-    let expected_body = ["RTC SET OK", "RTC TICK OK"];
+    let expected_body = [
+        "RTC SET OK",
+        "RTC TICK OK",
+        "RTC ALARM ARM OK",
+        "RTC ALARM EARLY OK",
+        "RTC ALARM FIRE OK",
+        "RTC ALARM ONCE OK",
+        "RTC ALARM IRQ OK",
+    ];
 
-    // Bound the whole search generously: the fixture spends ~3 s measuring the
-    // calendar advance at startup before its first burst, then repeats every ~1 s.
-    let deadline = Instant::now() + Duration::from_secs(15);
+    // Bound the whole search generously: the fixture's startup measurements now
+    // take ~15 s (3 s tick window, two ~4 s alarm boundaries plus the early/once
+    // dwells) before the first burst, then it repeats every ~1 s.
+    let deadline = Instant::now() + Duration::from_secs(45);
 
     // Scan for a BEGIN marker (skipping the boot banner and the human-readable
     // `now:` line), then assert the verdict body and the closing END.
@@ -89,7 +105,9 @@ fn verify_self_check_burst() -> Result<(), Box<dyn Error>> {
             return Err(format!("expected {END:?} to close the burst, got {got:?}").into());
         }
 
-        println!("  verified full {BEGIN}..{END} burst (load read-back + 1 Hz advance)");
+        println!(
+            "  verified full {BEGIN}..{END} burst (load read-back + 1 Hz advance + alarm polled/IRQ/LPM3-wake)"
+        );
         return Ok(());
     }
 }
