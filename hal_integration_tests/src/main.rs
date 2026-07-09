@@ -26,6 +26,7 @@ mod dma_tests;
 mod ref_a_tests;
 mod fram_tests;
 mod rtc_tests;
+mod rtc_tick_tests;
 mod watchdog_tests;
 mod wdt_interval_tests;
 
@@ -37,7 +38,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Starting Tests");
 
-    let suites: [(&str, fn() -> Result<(), Box<dyn Error>>); 25] = [
+    let suites: [(&str, fn() -> Result<(), Box<dyn Error>>); 26] = [
         ("serial_port", serial_port_tests::run),
         ("serial_irq", serial_irq_tests::run),
         ("dma", dma_tests::run),
@@ -55,6 +56,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ("ref_a", ref_a_tests::run),
         ("fram", fram_tests::run),
         ("rtc", rtc_tests::run),
+        ("rtc_tick", rtc_tick_tests::run),
         ("watchdog", watchdog_tests::run),
         ("wdt_interval", wdt_interval_tests::run),
         ("gpio", gpio_tests::run),

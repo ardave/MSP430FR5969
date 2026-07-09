@@ -28,6 +28,7 @@ pub mod pwm;
 pub mod ref_a;
 pub mod rtc;
 mod rtc_alarm;
+mod rtc_tick;
 pub mod rx_queue;
 pub mod serial;
 pub mod spi;
