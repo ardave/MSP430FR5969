@@ -999,6 +999,313 @@ impl SeqMember {
 }
 
 // ---------------------------------------------------------------------------
+// Window comparator
+// ---------------------------------------------------------------------------
+//
+// The converter can compare each result against two threshold registers in
+// silicon: any conversion stored through an `MCTLx` with `ADC12WINC` set
+// latches exactly one of three flags in `ADC12IFGR2` — **above** the window
+// (`ADC12HIIFG`, result > `ADC12HI`), **below** it (`ADC12LOIFG`,
+// result < `ADC12LO`), or **inside** it (`ADC12INIFG`,
+// `ADC12LO` ≤ result ≤ `ADC12HI`). Each flag has its own enable in
+// `ADC12IER2` and its own `ADC12IV` slot ([`IV_WINDOW_ABOVE`] = 0x06,
+// [`IV_WINDOW_BELOW`] = 0x08, [`IV_WINDOW_WITHIN`] = 0x0A, per TI's
+// msp430fr5969.h `ADC12IV_ADC12{HI,LO,IN}IFG`).
+//
+// The point of doing the comparison in silicon is that **the CPU does zero
+// work per sample**: enable only the crossing you care about, let the
+// converter free-run (repeat-single-channel + MSC, MODOSC-clocked — the
+// same free-running machinery the DMA engine uses, minus the DMA), and
+// sleep. `start_monitor*`/`stop_monitor` package exactly that threshold-
+// watch pattern; the `read_windowed*` methods are the one-shot polled
+// flavor, whose verdict is the comparator's own answer rather than a CPU
+// compare.
+//
+// Mechanics the driver sequences for you:
+// - Thresholds are raw counts in the conversion's own format — here always
+//   unsigned right-justified at the configured [`Resolution`] — and are
+//   writable only while `ENC = 0`.
+// - The window flags are **not self-clearing**: hardware only ever sets
+//   them, so the driver clears all three before every windowed start and
+//   `stop_monitor` clears them on the way out. (Reading `ADC12IV` clears
+//   the one flag it reports, like every IV register.)
+// - A free-running monitor completes conversions with `ADC12IE0` clear and
+//   no DMA service, so it parks the ADC12→DMA trigger latch high (see the
+//   DMA section above) — exactly like every polled read; the per-run scrub
+//   in the `*_dma` engines absorbs it.
+// - A window interrupt from a free-running monitor **re-fires every
+//   conversion** while the input stays out of range (each conversion
+//   re-latches the flag, ~tens of µs apart) — a wake-from-LPM0 handler must
+//   disarm inside the ISR via [`isr_disable_window_interrupts`], the same
+//   starvation lesson as the capture module's ACLK handler.
+
+/// Window-comparator thresholds: `low..=high` in **raw counts**, in the same
+/// format as results from this converter (unsigned right-justified at the
+/// configured [`Resolution`]). Built with [`Window::new`], which enforces
+/// `low <= high` — an inverted window would make the three comparator
+/// outcomes non-exclusive.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Window {
+    low: u16,
+    high: u16,
+}
+
+impl Window {
+    /// A window spanning `low..=high` counts. `None` if `low > high`.
+    pub fn new(low: u16, high: u16) -> Option<Window> {
+        if low > high {
+            return None;
+        }
+        Some(Window { low, high })
+    }
+
+    /// The lower threshold (`ADC12LO`).
+    pub fn low(&self) -> u16 {
+        self.low
+    }
+
+    /// The upper threshold (`ADC12HI`).
+    pub fn high(&self) -> u16 {
+        self.high
+    }
+}
+
+/// Where the comparator placed one windowed conversion, decoded from the
+/// `ADC12IFGR2` flag the conversion latched.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WindowVerdict {
+    /// `ADC12LOIFG`: result < the window's `low`.
+    Below,
+    /// `ADC12INIFG`: `low` ≤ result ≤ `high`.
+    Within,
+    /// `ADC12HIIFG`: result > the window's `high`.
+    Above,
+}
+
+/// The raw latched window flags (`ADC12IFGR2`), as a snapshot. A single
+/// windowed conversion sets exactly one; the flags accumulate across
+/// conversions until cleared.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct WindowFlags {
+    /// `ADC12HIIFG` — some conversion exceeded the window.
+    pub above: bool,
+    /// `ADC12INIFG` — some conversion landed inside the window.
+    pub within: bool,
+    /// `ADC12LOIFG` — some conversion fell below the window.
+    pub below: bool,
+}
+
+impl WindowFlags {
+    /// No flag latched.
+    pub fn none(&self) -> bool {
+        !(self.above || self.within || self.below)
+    }
+}
+
+/// Which window crossings fire the `ADC12` vector (`ADC12IER2` enables).
+/// For a threshold watch enable only the out-of-range sides and leave
+/// `within` off — otherwise an in-range free-running monitor interrupts on
+/// every conversion.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct WindowEvents {
+    /// Fire on `ADC12HIIFG` (result above the window).
+    pub above: bool,
+    /// Fire on `ADC12INIFG` (result inside the window).
+    pub within: bool,
+    /// Fire on `ADC12LOIFG` (result below the window).
+    pub below: bool,
+}
+
+impl WindowEvents {
+    /// Fire only when a result leaves the window (above **or** below) — the
+    /// usual configuration for a sleep-until-threshold monitor.
+    pub fn outside() -> WindowEvents {
+        WindowEvents {
+            above: true,
+            within: false,
+            below: true,
+        }
+    }
+}
+
+impl Adc {
+    /// Run one windowed conversion on a typed analog pin (ratiometric, AVCC
+    /// reference) and return the raw count plus **the comparator's own
+    /// verdict** — decoded from the `ADC12IFGR2` flag the conversion
+    /// latched, not from a CPU compare.
+    pub fn read_windowed<P: AdcPin>(
+        &mut self,
+        _pin: &mut P,
+        window: &Window,
+    ) -> (u16, WindowVerdict) {
+        self.read_windowed_inner(P::CHANNEL, Internal::None, RefSel::Avcc, window)
+    }
+
+    /// [`read_windowed`](Adc::read_windowed) on the internal (AVCC–AVSS)/2
+    /// supply monitor (~half full-scale by construction — see
+    /// [`read_supply_half`](Adc::read_supply_half), including the
+    /// long-[`SampleTime`] advice).
+    pub fn read_supply_half_windowed(&mut self, window: &Window) -> (u16, WindowVerdict) {
+        self.read_windowed_inner(31, Internal::SupplyHalf, RefSel::Avcc, window)
+    }
+
+    fn read_windowed_inner(
+        &mut self,
+        channel: u8,
+        internal: Internal,
+        refsel: RefSel,
+        window: &Window,
+    ) -> (u16, WindowVerdict) {
+        self.arm_windowed(channel, internal, refsel, window);
+        while self.adc.adc12ctl1().read().adc12busy().bit_is_set() {}
+        let counts = self.adc.adc12mem0().read().bits();
+        (counts, self.window_verdict())
+    }
+
+    /// Start one windowed conversion of the supply monitor and **return
+    /// immediately** — the non-blocking sibling of
+    /// [`read_supply_half_windowed`](Adc::read_supply_half_windowed), for
+    /// pairing with [`enable_window_interrupts`]
+    /// (Adc::enable_window_interrupts): completion latches exactly one
+    /// window flag, and an enabled one fires the `ADC12` vector.
+    pub fn start_supply_half_windowed(&mut self, window: &Window) {
+        self.arm_windowed(31, Internal::SupplyHalf, RefSel::Avcc, window);
+    }
+
+    /// Program + trigger one windowed conversion: clear stale window flags,
+    /// route the channel, load the thresholds, set `WINC`, go.
+    fn arm_windowed(&mut self, channel: u8, internal: Internal, refsel: RefSel, window: &Window) {
+        self.clear_window_flags_owned();
+        self.program(channel, internal, refsel);
+        self.program_window(window);
+        self.adc
+            .adc12ctl0()
+            .modify(|_, w| w.adc12enc().set_bit().adc12sc().set_bit());
+    }
+
+    /// Load `ADC12HI`/`ADC12LO` and set `WINC` on MCTL0. Caller guarantees
+    /// `ENC = 0` (i.e. runs after [`program`](Adc::program)).
+    fn program_window(&mut self, window: &Window) {
+        // Whole-value threshold registers; the PAC models them fieldless.
+        self.adc.adc12hi().write(|w| unsafe { w.bits(window.high) });
+        self.adc.adc12lo().write(|w| unsafe { w.bits(window.low) });
+        self.adc.adc12mctl0().modify(|_, w| w.adc12winc().set_bit());
+    }
+
+    /// Decode the latched flags into the verdict for the conversion that
+    /// just completed. A windowed conversion latches exactly one flag (the
+    /// driver cleared all three before starting); the decode order is just
+    /// a total mapping, not a priority.
+    fn window_verdict(&self) -> WindowVerdict {
+        let r = self.adc.adc12ifgr2().read();
+        if r.adc12hiifg().bit_is_set() {
+            WindowVerdict::Above
+        } else if r.adc12loifg().bit_is_set() {
+            WindowVerdict::Below
+        } else {
+            WindowVerdict::Within
+        }
+    }
+
+    /// Enable the selected window-crossing interrupts (`ADC12IER2`). An
+    /// enabled crossing fires the `ADC12` vector when its flag latches
+    /// (once GIE is set); demux with [`read_iv`] against the `IV_WINDOW_*`
+    /// constants. `ADC12IER2` is ADC-private and this driver owns
+    /// `pac::Adc12`, so a plain `modify` suffices.
+    pub fn enable_window_interrupts(&mut self, events: WindowEvents) {
+        self.adc.adc12ier2().modify(|_, w| {
+            w.adc12hiie().bit(events.above);
+            w.adc12inie().bit(events.within);
+            w.adc12loie().bit(events.below)
+        });
+    }
+
+    /// Disable all three window-crossing interrupts. Latched flags stay
+    /// latched (read them with [`window_flags`], clear with
+    /// [`clear_window_flags`]).
+    pub fn disable_window_interrupts(&mut self) {
+        self.enable_window_interrupts(WindowEvents::default());
+    }
+
+    /// Start a **free-running threshold watch** on a typed analog pin: the
+    /// converter repeats windowed conversions of this one channel
+    /// back-to-back (repeat-single-channel + MSC, MODOSC-clocked, no CPU or
+    /// DMA per sample) and the crossings selected in `events` fire the
+    /// `ADC12` vector. The canonical use sleeps in LPM0 right after this
+    /// returns and lets the window interrupt wake the CPU — with the ISR
+    /// disarming via [`isr_disable_window_interrupts`], because the flag
+    /// re-latches on every conversion while the input stays out of range.
+    ///
+    /// Stop with [`stop_monitor`](Adc::stop_monitor). While the monitor
+    /// runs, no other `read*`/`start*` method may be called (they would
+    /// reprogram a running converter).
+    pub fn start_monitor<P: AdcPin>(&mut self, _pin: &mut P, window: &Window, events: WindowEvents) {
+        self.start_monitor_inner(P::CHANNEL, Internal::None, window, events);
+    }
+
+    /// [`start_monitor`](Adc::start_monitor) on the internal (AVCC–AVSS)/2
+    /// supply monitor.
+    pub fn start_supply_half_monitor(&mut self, window: &Window, events: WindowEvents) {
+        self.start_monitor_inner(31, Internal::SupplyHalf, window, events);
+    }
+
+    fn start_monitor_inner(
+        &mut self,
+        channel: u8,
+        internal: Internal,
+        window: &Window,
+        events: WindowEvents,
+    ) {
+        self.clear_window_flags_owned();
+        self.program(channel, internal, RefSel::Avcc);
+        self.program_window(window);
+
+        // Free-running: repeat-single-channel (CONSEQ = 2) with MSC, the
+        // same machinery as the DMA engine.
+        self.adc
+            .adc12ctl1()
+            .modify(|_, w| w.adc12conseq().adc12conseq_2());
+        self.adc.adc12ctl0().modify(|_, w| w.adc12msc().set_bit());
+
+        // Arm the interrupt side first, then start: the first out-of-range
+        // conversion already finds its enable set.
+        self.enable_window_interrupts(events);
+        self.adc
+            .adc12ctl0()
+            .modify(|_, w| w.adc12enc().set_bit().adc12sc().set_bit());
+    }
+
+    /// Stop a running monitor and restore the single-conversion contract
+    /// the rest of the driver assumes: interrupts disarmed, converter
+    /// halted (a conversion in flight completes first), `CONSEQ = 0` /
+    /// `MSC = 0` restored, MEM0 drained, window flags cleared.
+    pub fn stop_monitor(&mut self) {
+        self.disable_window_interrupts();
+        self.adc.adc12ctl0().modify(|_, w| w.adc12enc().clear_bit());
+        while self.adc.adc12ctl1().read().adc12busy().bit_is_set() {}
+        self.adc.adc12ctl0().modify(|_, w| w.adc12msc().clear_bit());
+        self.adc
+            .adc12ctl1()
+            .modify(|_, w| w.adc12conseq().adc12conseq_0());
+        let _ = self.adc.adc12mem0().read().bits();
+        self.clear_window_flags_owned();
+    }
+
+    /// Owner-side clear of the three window flags. `modify` writes back the
+    /// other `ADC12IFGR2` flags at their read value (a latched flag stays
+    /// latched, a clear one stays clear) — safe here because the driver
+    /// only calls this with the window interrupts disarmed, so no ISR-side
+    /// IV read can race the read-modify-write.
+    fn clear_window_flags_owned(&mut self) {
+        self.adc.adc12ifgr2().modify(|_, w| {
+            w.adc12hiifg().clear_bit();
+            w.adc12inifg().clear_bit();
+            w.adc12loifg().clear_bit()
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ISR-side free functions
 // ---------------------------------------------------------------------------
 //
@@ -1013,16 +1320,72 @@ impl SeqMember {
 // collected, flag down. Don't also call `read_iv` "to be safe": the IV read
 // clears the flag first and a subsequent IV read reports 0, which is
 // confusing at best. `read_iv` exists for when multiple ADC interrupt sources
-// (window monitor, overflows, more MEMs) are enabled and the handler must
-// demux — not needed while this driver only ever arms IFG0.
+// are enabled and the handler must demux — which the window comparator makes
+// real: a handler with both a conversion interrupt and window interrupts
+// armed demuxes on `read_iv` (`IV_WINDOW_*` vs [`IV_CONVERSION`]), collecting
+// MEM0 via `read_result` only for the conversion case.
 
-/// ISR-side: read `ADC12IV` — 0x0C means "MEM0 conversion complete"
-/// (`ADC12IFG0`), 0 means nothing pending. Reading clears the reported
+/// `ADC12IV` value for `ADC12HIIFG` — a windowed result **above** the window
+/// (TI msp430fr5969.h `ADC12IV_ADC12HIIFG`).
+pub const IV_WINDOW_ABOVE: u16 = 0x06;
+/// `ADC12IV` value for `ADC12LOIFG` — a windowed result **below** the window.
+pub const IV_WINDOW_BELOW: u16 = 0x08;
+/// `ADC12IV` value for `ADC12INIFG` — a windowed result **inside** the window.
+pub const IV_WINDOW_WITHIN: u16 = 0x0A;
+/// `ADC12IV` value for `ADC12IFG0` — MEM0 conversion complete.
+pub const IV_CONVERSION: u16 = 0x0C;
+
+/// ISR-side: read `ADC12IV` — [`IV_CONVERSION`] (0x0C) means "MEM0
+/// conversion complete" (`ADC12IFG0`), the `IV_WINDOW_*` values report the
+/// window comparator, 0 means nothing pending. Reading clears the reported
 /// source's flag (for IFG0, *without* collecting MEM0 — prefer
 /// [`read_result`], which does both).
 pub fn read_iv() -> u16 {
     let adc = unsafe { pac::Adc12::steal() };
     adc.adc12iv().read().bits()
+}
+
+/// ISR-side (or polled): snapshot the latched window-comparator flags
+/// (`ADC12IFGR2`). A plain read — clears nothing.
+pub fn window_flags() -> WindowFlags {
+    let adc = unsafe { pac::Adc12::steal() };
+    let r = adc.adc12ifgr2().read();
+    WindowFlags {
+        above: r.adc12hiifg().bit_is_set(),
+        within: r.adc12inifg().bit_is_set(),
+        below: r.adc12loifg().bit_is_set(),
+    }
+}
+
+/// Clear all three window-comparator flags. Call only with the window
+/// interrupts disarmed (or from inside the `ADC12` ISR): this is a
+/// read-modify-write on `ADC12IFGR2`, and a concurrent ISR-side `ADC12IV`
+/// read clears flags in silicon — an interleaved RMW could resurrect one.
+pub fn clear_window_flags() {
+    let adc = unsafe { pac::Adc12::steal() };
+    adc.adc12ifgr2().modify(|_, w| {
+        w.adc12hiifg().clear_bit();
+        w.adc12inifg().clear_bit();
+        w.adc12loifg().clear_bit()
+    });
+}
+
+/// ISR-side: disarm all three window-crossing interrupts (`ADC12IER2`).
+///
+/// **Required inside any window-interrupt handler that wakes a free-running
+/// monitor** ([`Adc::start_monitor`]): while the input stays out of range,
+/// every conversion (~tens of µs apart) re-latches the flag and would
+/// re-enter the ISR forever — the same starve-main lesson as the capture
+/// module's ACLK handler. Sound from the ISR because `ADC12IER2` is
+/// ADC-private and the owning driver does not touch it between
+/// `start_monitor` and `stop_monitor`.
+pub fn isr_disable_window_interrupts() {
+    let adc = unsafe { pac::Adc12::steal() };
+    adc.adc12ier2().modify(|_, w| {
+        w.adc12hiie().clear_bit();
+        w.adc12inie().clear_bit();
+        w.adc12loie().clear_bit()
+    });
 }
 
 /// ISR-side: read the MEM0 conversion result. The read also clears
