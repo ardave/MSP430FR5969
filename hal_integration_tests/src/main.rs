@@ -6,6 +6,7 @@ mod serial;
 mod serial_port_tests;
 mod serial_irq_tests;
 mod gpio_tests;
+mod ta_pwm_tests;
 mod timer_tests;
 mod delay_tests;
 mod deep_sleep_tests;
@@ -38,7 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Starting Tests");
 
-    let suites: [(&str, fn() -> Result<(), Box<dyn Error>>); 26] = [
+    let suites: [(&str, fn() -> Result<(), Box<dyn Error>>); 27] = [
         ("serial_port", serial_port_tests::run),
         ("serial_irq", serial_irq_tests::run),
         ("dma", dma_tests::run),
@@ -61,6 +62,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ("wdt_interval", wdt_interval_tests::run),
         ("gpio", gpio_tests::run),
         ("timer", timer_tests::run),
+        ("ta_pwm", ta_pwm_tests::run),
         ("delay", delay_tests::run),
         ("deep_sleep", deep_sleep_tests::run),
         ("lpmx5", lpmx5_tests::run),

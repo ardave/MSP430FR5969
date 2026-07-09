@@ -320,6 +320,26 @@ impl<PORT: PortRegs, const N: u8, MODE> Pin<PORT, N, MODE> {
         }
         Pin::new()
     }
+
+    /// Configure as a **Timer_A compare output** (`TAx.n`) for PWM.
+    ///
+    /// The output twin of [`into_timer_a_capture`](Pin::into_timer_a_capture):
+    /// same secondary module function (`SEL0 = 1, SEL1 = 0`), but with the
+    /// direction set to **output** — for a timer pin, `PxDIR` picks the
+    /// compare-output role (`TAx.n` drives the pad) over the capture-input
+    /// role (datasheet SLAS704G Tables 6-49/6-50). The resulting
+    /// [`Pin<_, _, TimerA>`] is what [`crate::pwm::PwmTimerA::channel`]
+    /// accepts; only pins actually wired to a Timer_A compare channel
+    /// implement [`crate::pwm::PwmPinA`], so the channel number is correct by
+    /// construction.
+    pub fn into_timer_a_output(self) -> Pin<PORT, N, TimerA> {
+        unsafe {
+            set_bit(PORT::DIR, N); // output: the timer drives the pad
+            clear_bit(PORT::REN, N);
+            select_secondary::<PORT>(N);
+        }
+        Pin::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
