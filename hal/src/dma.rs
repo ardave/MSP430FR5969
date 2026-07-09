@@ -668,6 +668,37 @@ impl<const N: u8> Channel<N> {
         barrier();
     }
 
+    /// [`wait_done`](Self::wait_done) with an upper bound: poll for
+    /// completion at most `max_spins` times. Completion clears the flag and
+    /// returns `true`; timeout **disarms the channel** first and returns
+    /// `false` — either way the DMA is out of the buffers when this returns,
+    /// so the borrows can safely end.
+    ///
+    /// For transfers whose trigger delivery is itself under test (e.g. an
+    /// ADC12 trigger configuration the silicon hasn't confirmed — see the
+    /// latch erratum on [`consume_stale_trigger_word`]
+    /// (Self::consume_stale_trigger_word)), where the unbounded wait would
+    /// hang the firmware dark instead of failing a verdict.
+    pub fn wait_done_bounded(&mut self, max_spins: u32) -> bool {
+        let mut spins = 0u32;
+        while !self.is_done() {
+            spins += 1;
+            if spins >= max_spins {
+                self.disarm();
+                // The final trigger may have landed between the last poll
+                // and the disarm; report a completed transfer honestly.
+                if !self.is_done() {
+                    barrier();
+                    return false;
+                }
+                break;
+            }
+        }
+        self.clear_done();
+        barrier();
+        true
+    }
+
     /// Set `DMAIE`: completion (`DMAIFG`) fires the shared `DMA` vector once
     /// GIE is up. Demux and consume with [`read_iv`] in the ISR. The blocking
     /// APIs on this channel poll-and-clear the same flag, so don't mix them
