@@ -5,6 +5,7 @@
 
 pub mod adc;
 mod adc_cal;
+mod adc_seq;
 pub mod aes;
 mod baud;
 pub mod capture;

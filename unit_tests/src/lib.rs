@@ -15,6 +15,7 @@
 #![allow(dead_code)]
 
 mod adc_cal;
+mod adc_seq;
 mod baud;
 mod capture_math;
 mod comp_ladder;

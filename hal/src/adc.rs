@@ -8,10 +8,13 @@
 //! (Adc::enable_conversion_interrupt) and completion fires the `ADC12` vector,
 //! where [`read_result`] collects the count (canonically after
 //! [`crate::power::enter_lpm0`] — MODOSC self-clocks the conversion while the
-//! CPU sleeps). The `*_repeated_dma` methods add the one sequencing mode this
-//! driver uses: repeat-single-channel free-running conversions with a DMA
-//! channel draining MEM0 per completion (see the DMA section below). No
-//! multi-channel sequences yet.
+//! CPU sleeps). Two sequencing modes build on that base: the `*_repeated_dma`
+//! methods run repeat-single-channel free-running conversions with a DMA
+//! channel draining MEM0 per completion (see the DMA section below), and the
+//! `read_sequence*` methods run a hardware **sequence of channels**
+//! (`CONSEQ = 1`) — several *different* inputs scanned off one trigger into
+//! `MEM0..MEMn`, each with its own reference, polled or DMA-drained (see the
+//! sequence section).
 //!
 //! # How a conversion works (the mechanism this module programs)
 //!
@@ -87,6 +90,13 @@ use crate::gpio::{Analog, Pin, P1, P2, P3, P4};
 use crate::pac;
 use crate::ref_a::Ref;
 use crate::tlv::AdcCal;
+
+// The sequence-of-channels member/validation/encoding math lives in
+// `adc_seq.rs` (dependency-free so `unit_tests/` can `include!` it) and is
+// re-exported here as the public API surface.
+pub use crate::adc_seq::{SeqMember, SequenceError, MAX_SEQUENCE};
+
+use crate::adc_seq;
 
 /// Which on-chip source (if any) to route to the converter via `ADC12CTL3`.
 /// Internal use only — exposed to callers through the dedicated read methods.
@@ -701,6 +711,290 @@ impl Adc {
             .adc12ctl1()
             .modify(|_, w| w.adc12conseq().adc12conseq_0());
         let _ = self.adc.adc12mem0().read().bits();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sequence of channels (CONSEQ = 1)
+// ---------------------------------------------------------------------------
+//
+// Where repeat-single-channel (above) samples ONE input many times, a
+// *sequence of channels* scans MANY inputs once per trigger — the datalogger
+// shape: temperature + supply + an external pin, one `ENC|SC`, three results
+// in `MEM0..MEM2`. The hardware walks the memory-control registers in
+// address order from `MCTL0`, converting each `MCTLx`'s channel against its
+// *own* `VRSEL` reference into the matching `MEMx`, and stops at the first
+// register with `EOS` set. With `ADC12MSC` the conversions run back-to-back
+// off the single trigger. The member list ↔ register encoding (INCH/VRSEL/
+// EOS placement, the CTL3 map bits, the ≤ 8-member cap that keeps every
+// member under the driver-programmed `ADC12SHT0x` sample time) is pure math
+// in `adc_seq.rs`, host-tested.
+//
+// Because each `MCTLx` carries its own reference select, one scan can mix
+// ratiometric and absolute members ([`SeqMember::supply_half`] next to
+// [`SeqMember::temperature`]); any member that converts against VREF makes
+// the whole scan a `_vref` call, since the one `&Ref` proves the shared
+// reference is up for all of them. Results land **in member order** —
+// `members[i]` → `MEMi` → `results[i]` — which is exactly what the
+// `adc_seq` fixture's disjoint-window verdicts pin on hardware (a swapped
+// MCTLx→MEMx mapping puts temperature counts in the supply window and fails
+// loudly).
+//
+// The DMA-drained variant reuses trigger 26 with the source side
+// *incrementing* across `MEM0..MEMn`: each member's completion presents one
+// trigger edge, the DMA moves that member's `MEMx` (clearing its `IFGx`),
+// and the final transfer of the scan rides the *last* member's flag. The
+// trigger-latch erratum (see the section above) was characterized in
+// repeat-single-channel mode; whether the per-run
+// `consume_stale_trigger_word` scrub behaves identically when the edges
+// come from a multi-member sequence is precisely what the fixture's re-run
+// and park-then-rerun verdicts establish on hardware — and why the DMA wait
+// here is **bounded** (`wait_done_bounded`): if the sequence trigger model
+// turns out wrong, the driver returns [`SequenceError::DmaIncomplete`]
+// instead of hanging the firmware dark.
+
+impl Adc {
+    /// Run one hardware-sequenced scan (`CONSEQ = 1`): convert every member
+    /// in order off a single trigger, `members[i]`'s result landing in
+    /// `results[i]`. Polled — busy-waits the scan (bounded: MODOSC
+    /// self-clocks it, ≤ 8 members × sample + 13 clocks) and restores the
+    /// single-conversion contract before returning.
+    ///
+    /// All members must be AVCC-referenced (ratiometric); a member built
+    /// with a `_vref` constructor makes this return
+    /// [`SequenceError::NeedsRef`] — use
+    /// [`read_sequence_vref`](Adc::read_sequence_vref), whose `&Ref` proves
+    /// the reference those members convert against is up.
+    pub fn read_sequence(
+        &mut self,
+        members: &[SeqMember],
+        results: &mut [u16],
+    ) -> Result<(), SequenceError> {
+        adc_seq::validate(members, results.len(), false)?;
+        self.read_sequence_inner(members, results);
+        Ok(())
+    }
+
+    /// [`read_sequence`](Adc::read_sequence) for scans with REF_A-referenced
+    /// members: the `&Ref` proves the reference is on and settled (and, for
+    /// [`SeqMember::temperature`], biases the sensor) and borrows it so it
+    /// cannot be `free`d mid-scan. AVCC-referenced members may ride along —
+    /// mixing references within one scan is exactly what per-member `VRSEL`
+    /// is for.
+    pub fn read_sequence_vref(
+        &mut self,
+        members: &[SeqMember],
+        vref: &Ref,
+        results: &mut [u16],
+    ) -> Result<(), SequenceError> {
+        let _ = vref;
+        adc_seq::validate(members, results.len(), true)?;
+        self.read_sequence_inner(members, results);
+        Ok(())
+    }
+
+    /// The polled scan: program, trigger once, wait for the *last* member's
+    /// flag (the sequencer fills `MEM0..MEMn` in order, so the last flag up
+    /// means every result is in), collect in order, restore.
+    fn read_sequence_inner(&mut self, members: &[SeqMember], results: &mut [u16]) {
+        let n = members.len();
+        self.program_sequence(members);
+        self.drain_mems(n);
+
+        // Arm and trigger once; MSC runs the remaining members back-to-back.
+        self.adc
+            .adc12ctl0()
+            .modify(|_, w| w.adc12enc().set_bit().adc12sc().set_bit());
+
+        // Self-completing (MODOSC), so this poll is bounded like `convert`'s.
+        let last_ifg = 1u16 << (n - 1);
+        while self.adc.adc12ifgr0().read().bits() & last_ifg == 0 {}
+
+        // Collect MEM0..MEMn-1 in member order; each read clears its IFGx.
+        let mem0 = self.adc.adc12mem0().as_ptr() as *const u16;
+        for (i, slot) in results[..n].iter_mut().enumerate() {
+            *slot = unsafe { mem0.add(i).read_volatile() };
+        }
+
+        self.restore_single_conversion();
+    }
+
+    /// Program a member list: route the internal sources, write
+    /// `MCTL0..MCTLn` (channel + reference per member, `EOS` on the last),
+    /// and switch the sequencer to sequence-of-channels with MSC. The
+    /// `MCTLx` registers are a contiguous word array at offset 0x20, but the
+    /// PAC names each one individually, so the walk is a raw pointer off
+    /// `MCTL0` (à la `crc`/`fram`) carrying the host-tested `adc_seq`
+    /// encoding.
+    fn program_sequence(&mut self, members: &[SeqMember]) {
+        // MCTLx and CTL3 are writable only while ENC = 0.
+        self.adc.adc12ctl0().modify(|_, w| w.adc12enc().clear_bit());
+
+        // CTL3: connect whichever internal sources the scan uses (the two
+        // map bits steer different channels, so both can be up at once).
+        // CSTARTADD stays 0 (the scan starts at MEM0) — the `write` resets it.
+        let (batmap, tcmap) = adc_seq::map_bits(members);
+        self.adc.adc12ctl3().write(|w| {
+            w.adc12batmap().bit(batmap);
+            w.adc12tcmap().bit(tcmap)
+        });
+
+        let mut words = [0u16; adc_seq::MAX_SEQUENCE];
+        adc_seq::encode_mctl(members, &mut words);
+        let mctl0 = self.adc.adc12mctl0().as_ptr();
+        for (i, &word) in words[..members.len()].iter().enumerate() {
+            unsafe { mctl0.add(i).write_volatile(word) };
+        }
+
+        // Sequence-of-channels, one trigger for the whole scan (MSC).
+        self.adc
+            .adc12ctl1()
+            .modify(|_, w| w.adc12conseq().adc12conseq_1());
+        self.adc.adc12ctl0().modify(|_, w| w.adc12msc().set_bit());
+    }
+
+    /// Read and discard `MEM0..MEMn-1`, clearing any stale `ADC12IFGx` a
+    /// previous scan (or an aborted DMA drain) left latched, so completion
+    /// polling sees only fresh flags.
+    fn drain_mems(&mut self, n: usize) {
+        let mem0 = self.adc.adc12mem0().as_ptr() as *const u16;
+        for i in 0..n {
+            let _ = unsafe { mem0.add(i).read_volatile() };
+        }
+    }
+
+    /// Undo the sequence configuration: stop the sequencer (a conversion in
+    /// flight completes first) and restore the `CONSEQ = 0` / `MSC = 0`
+    /// single-conversion contract the rest of the driver assumes.
+    fn restore_single_conversion(&mut self) {
+        self.adc.adc12ctl0().modify(|_, w| w.adc12enc().clear_bit());
+        while self.adc.adc12ctl1().read().adc12busy().bit_is_set() {}
+        self.adc.adc12ctl0().modify(|_, w| w.adc12msc().clear_bit());
+        self.adc
+            .adc12ctl1()
+            .modify(|_, w| w.adc12conseq().adc12conseq_0());
+    }
+}
+
+#[cfg(feature = "critical-section")]
+impl Adc {
+    /// Bound on the DMA-completion poll in the sequence drain. A full
+    /// 8-member scan at the longest sample time is ~450 µs; each poll
+    /// iteration costs several cycles even at MCLK = 16 MHz, so this is
+    /// orders of magnitude of headroom — it only trips if the ADC12→DMA
+    /// trigger fails to deliver one edge per member (the open question the
+    /// `adc_seq` fixture exists to settle).
+    const SEQ_DMA_SPIN_LIMIT: u32 = 100_000;
+
+    /// [`read_sequence`](Adc::read_sequence) with the collection done by a
+    /// DMA channel instead of the CPU: each member's completion edge moves
+    /// its `MEMx` into `results` (source *and* destination incrementing),
+    /// so the scan costs the CPU only the setup and the wait. Same
+    /// AVCC-only member rule; same single-conversion restore.
+    ///
+    /// Returns [`SequenceError::DmaIncomplete`] if the drain does not
+    /// finish within a generous bound (see the section comment — the wait
+    /// is bounded precisely because this trigger configuration is the
+    /// erratum's untested corner).
+    pub fn read_sequence_dma<const N: u8>(
+        &mut self,
+        members: &[SeqMember],
+        ch: &mut crate::dma::Channel<N>,
+        results: &mut [u16],
+    ) -> Result<(), SequenceError> {
+        adc_seq::validate(members, results.len(), false)?;
+        self.read_sequence_dma_inner(members, ch, results)
+    }
+
+    /// [`read_sequence_vref`](Adc::read_sequence_vref), DMA-drained — the
+    /// `&Ref`-taking sibling of [`read_sequence_dma`](Adc::read_sequence_dma).
+    pub fn read_sequence_dma_vref<const N: u8>(
+        &mut self,
+        members: &[SeqMember],
+        vref: &Ref,
+        ch: &mut crate::dma::Channel<N>,
+        results: &mut [u16],
+    ) -> Result<(), SequenceError> {
+        let _ = vref;
+        adc_seq::validate(members, results.len(), true)?;
+        self.read_sequence_dma_inner(members, ch, results)
+    }
+
+    /// The DMA-drained scan: program, scrub the trigger latch, arm the
+    /// channel across `MEM0..MEMn` (arm first, trigger second), start, and
+    /// wait — bounded.
+    fn read_sequence_dma_inner<const N: u8>(
+        &mut self,
+        members: &[SeqMember],
+        ch: &mut crate::dma::Channel<N>,
+        results: &mut [u16],
+    ) -> Result<(), SequenceError> {
+        let n = members.len();
+        self.program_sequence(members);
+
+        // Scrub the trigger latch (see the repeat-single-channel section:
+        // one unserviced conversion anywhere parks it high and deafens
+        // every later edge-sensitive run). The scrub's dummy MEM0 read also
+        // clears a stale ADC12IFG0.
+        let mut scratch = 0u16;
+        unsafe {
+            ch.consume_stale_trigger_word(
+                crate::dma::TriggerSource::Adc12,
+                self.adc.adc12mem0().as_ptr() as *const u16,
+                &mut scratch,
+            );
+        }
+        // Stale IFG1..n-1 from an earlier scan don't gate the edge-sensitive
+        // trigger, but drain them anyway so the flag file starts clean.
+        self.drain_mems(n);
+
+        // Arm first, trigger second: source walks MEM0..MEMn-1 one word per
+        // completion edge, destination walks the results buffer.
+        unsafe {
+            ch.arm_single_words(
+                crate::dma::TriggerSource::Adc12,
+                self.adc.adc12mem0().as_ptr() as *const u16,
+                crate::dma::AddrMode::Increment,
+                results.as_mut_ptr(),
+                crate::dma::AddrMode::Increment,
+                n as u16,
+            );
+        }
+        self.adc
+            .adc12ctl0()
+            .modify(|_, w| w.adc12enc().set_bit().adc12sc().set_bit());
+
+        // `n` collected transfers later the channel completes — the last one
+        // riding the final member's flag. Bounded: a missing edge turns into
+        // a verdict, not a dark board.
+        let done = ch.wait_done_bounded(Self::SEQ_DMA_SPIN_LIMIT);
+        self.restore_single_conversion();
+        if !done {
+            // An aborted drain leaves uncollected results latched; clear
+            // them (the next run's scrub owns the trigger latch itself).
+            self.drain_mems(n);
+            return Err(SequenceError::DmaIncomplete);
+        }
+        Ok(())
+    }
+}
+
+/// Typed-pin [`SeqMember`] constructors — defined here (not in the pure
+/// `adc_seq.rs`) because they name the HAL's [`AdcPin`] trait.
+impl SeqMember {
+    /// A sequence member reading a typed analog pin ratiometrically against
+    /// AVCC — the sequence sibling of [`Adc::read`]. Takes the pin by
+    /// reference as proof it exists in the `Analog` typestate; the scan
+    /// itself is momentary, so no exclusive borrow is held.
+    pub fn pin<P: AdcPin>(_pin: &P) -> SeqMember {
+        SeqMember::channel(P::CHANNEL)
+    }
+
+    /// A sequence member reading a typed analog pin against the REF_A
+    /// reference (absolute) — the sequence sibling of [`Adc::read_vref`].
+    /// Requires the `_vref` read methods.
+    pub fn pin_vref<P: AdcPin>(_pin: &P) -> SeqMember {
+        SeqMember::channel_vref(P::CHANNEL)
     }
 }
 
