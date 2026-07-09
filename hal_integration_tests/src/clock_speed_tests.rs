@@ -31,19 +31,36 @@ const EXPECTED_BURST: [&str; 4] = [
 const PERIOD_MIN: Duration = Duration::from_millis(900);
 const PERIOD_MAX: Duration = Duration::from_millis(1_800);
 
+/// Verify the default profile: `configure_max_speed` (MCLK = SMCLK = 16 MHz,
+/// one FRAM wait state).
 pub fn run() -> Result<(), Box<dyn Error>> {
-    println!("Starting high-speed clock profile Tests...");
+    println!("Starting high-speed clock profile Tests (configure_max_speed)...");
 
-    test_clock_speed_fixture()?;
+    test_clock_speed_fixture(&[])?;
 
     println!("High-speed clock profile Tests Completed Successfully");
     Ok(())
 }
 
-/// Flash the clock-speed fixture (hands-free) and assert one complete verdict
-/// burst plus the wall-clock repeat period.
-fn test_clock_speed_fixture() -> Result<(), Box<dyn Error>> {
-    deployment::build_and_flash("clock_speed_test_runner")?;
+/// Verify the stage-1 profile: `configure_high_speed` (SMCLK 16 MHz, MCLK
+/// 8 MHz, zero wait states), by rebuilding the same fixture source with the
+/// `clock_high_speed` cargo feature and flashing that variant. Same verdict
+/// strings — the fixture's compile-time expectations (`EXPECT_NWAITS`, the
+/// profile constructor) are what differ.
+pub fn run_high_speed() -> Result<(), Box<dyn Error>> {
+    println!("Starting high-speed clock profile Tests (configure_high_speed)...");
+
+    test_clock_speed_fixture(&["clock_high_speed"])?;
+
+    println!("High-speed clock profile Tests Completed Successfully");
+    Ok(())
+}
+
+/// Flash the clock-speed fixture (hands-free) with the given cargo features
+/// selecting the profile under test, and assert one complete verdict burst
+/// plus the wall-clock repeat period.
+fn test_clock_speed_fixture(features: &[&str]) -> Result<(), Box<dyn Error>> {
+    deployment::build_and_flash_with_features("clock_speed_test_runner", features)?;
 
     let port_path = crate::serial::resolve_port()?;
 
