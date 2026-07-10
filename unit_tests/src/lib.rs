@@ -23,5 +23,6 @@ mod crc_soft;
 mod fram_addr;
 mod mpu_seg;
 mod rtc_alarm;
+mod rtc_tick;
 mod rx_queue;
 mod ticks;

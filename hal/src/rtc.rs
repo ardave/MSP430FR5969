@@ -81,6 +81,11 @@ use crate::pac;
 // consumers only ever see `hal::rtc::Alarm`.
 pub use crate::rtc_alarm::{alarm_matches, Alarm, AlarmError};
 
+// The prescaler-tick rate↔register math lives in `rtc_tick.rs` (dependency-
+// free, host-tested in `unit_tests/`); re-exported here so consumers only
+// ever see `hal::rtc::TickRate`.
+pub use crate::rtc_tick::TickRate;
+
 /// A wall-clock date and time, all fields **binary** (not BCD).
 ///
 /// Field ranges follow the RTC_B calendar: `weekday` is `0..=6` with whatever
@@ -319,6 +324,58 @@ impl Rtc {
         self.rtc.rtcctl01().modify(|_, w| w.rtcaie().set_bit());
     }
 
+    /// Enable a **periodic prescaler tick** interrupt at `rate` — a
+    /// sub-second, crystal-accurate heartbeat from the RTC's own divider
+    /// chain, at sixteen power-of-two rates from 16.384 kHz to 0.5 Hz (see
+    /// [`TickRate`]). Fires the single `RTC` vector; [`read_iv`] returns
+    /// `0x08` for an RT0PS rate (the first eight) or `0x0A` for an RT1PS
+    /// rate (the last eight). The prescalers ride ACLK's LFXT like the
+    /// calendar itself, so a tick **wakes LPM3** given a
+    /// `#[interrupt(wake_cpu)]` handler — the classic clocked-sleep system
+    /// tick without spending a Timer_A block.
+    ///
+    /// The two prescalers are independent: one rate from each bank can run
+    /// concurrently (a second call in the *same* bank replaces that bank's
+    /// rate). Programming order per SLAU367's arming discipline: the
+    /// interval is selected and the stale flag cleared in the same register
+    /// write that sets the enable, so a pending old-rate tick cannot fire
+    /// the new-rate ISR.
+    ///
+    /// **Fast rates vs. slow MCLK**: at 16.384 kHz a tick arrives every
+    /// 61 µs — an ISR slower than that starves `main` forever (the capture
+    /// module's ACLK lesson). One-shot wake handlers must disarm *inside
+    /// the ISR* via [`isr_disable_tick_interrupts`].
+    pub fn enable_tick_interrupt(&self, rate: TickRate) {
+        if rate.uses_rt1ps() {
+            self.rtc.rtcps1ctl().modify(|_, w| {
+                w.rt1ip().set(rate.ip_code());
+                w.rt1psifg().clear_bit();
+                w.rt1psie().set_bit()
+            });
+        } else {
+            self.rtc.rtcps0ctl().modify(|_, w| {
+                w.rt0ip().set(rate.ip_code());
+                w.rt0psifg().clear_bit();
+                w.rt0psie().set_bit()
+            });
+        }
+    }
+
+    /// Disable the prescaler-tick interrupt serving `rate`'s **bank** (any
+    /// RT0PS rate disables the RT0PS tick, any RT1PS rate the RT1PS one)
+    /// and clear its pending flag. The other bank is untouched.
+    pub fn disable_tick_interrupt(&self, rate: TickRate) {
+        if rate.uses_rt1ps() {
+            self.rtc
+                .rtcps1ctl()
+                .modify(|_, w| w.rt1psie().clear_bit().rt1psifg().clear_bit());
+        } else {
+            self.rtc
+                .rtcps0ctl()
+                .modify(|_, w| w.rt0psie().clear_bit().rt0psifg().clear_bit());
+        }
+    }
+
     /// Release the underlying peripheral. The calendar is left running.
     pub fn free(self) -> pac::RtcBRealTimeClock {
         self.rtc
@@ -420,4 +477,27 @@ pub fn clear_alarm_irq() {
     // disjoint from the calendar/control bits the Rtc owner manages.
     let rtc = unsafe { pac::RtcBRealTimeClock::steal() };
     rtc.rtcctl01().modify(|_, w| w.rtcaifg().clear_bit());
+}
+
+/// ISR-side: disarm **both** prescaler-tick interrupts (`RT0PSIE` and
+/// `RT1PSIE`, pending flags cleared with them).
+///
+/// **Required inside any tick handler meant to fire once** — the prescaler
+/// re-latches its flag every period, and at the fast RT0PS rates (61 µs at
+/// 16.384 kHz) a keep-armed handler re-enters faster than a 1 MHz MCLK can
+/// leave it, starving `main` forever (the capture module's ACLK lesson).
+/// Sound from the ISR because the tick enables live in the prescaler
+/// control registers, which the owning [`Rtc`] only touches through
+/// [`enable_tick_interrupt`](Rtc::enable_tick_interrupt) /
+/// [`disable_tick_interrupt`](Rtc::disable_tick_interrupt) from thread mode
+/// — don't call those while a tick ISR that also disarms may be in flight.
+pub fn isr_disable_tick_interrupts() {
+    // SAFETY: a stolen handle clearing enable/flag bits in the two
+    // prescaler control registers — disjoint from the calendar/control bits
+    // the Rtc owner manages between these calls.
+    let rtc = unsafe { pac::RtcBRealTimeClock::steal() };
+    rtc.rtcps0ctl()
+        .modify(|_, w| w.rt0psie().clear_bit().rt0psifg().clear_bit());
+    rtc.rtcps1ctl()
+        .modify(|_, w| w.rt1psie().clear_bit().rt1psifg().clear_bit());
 }

@@ -1,4 +1,5 @@
-//! Timer_B0 pulse-width modulation (`embedded_hal::pwm::SetDutyCycle`).
+//! Timer_B0 **and Timer_A** pulse-width modulation
+//! (`embedded_hal::pwm::SetDutyCycle`).
 //!
 //! Where [`crate::timer`] *reads* a free-running counter to measure time, PWM
 //! *drives* a pin: the same kind of counter, but each tick is compared against
@@ -68,6 +69,33 @@
 //! other pins but `TB0.0` is consumed as the period, so it is not a usable PWM
 //! output here.)
 //!
+//! # Timer_A PWM ([`PwmTimerA`]) — the same machinery on TA0/TA1
+//!
+//! Timer_A blocks generate PWM exactly the same way (up mode, `CCR0` period,
+//! `OUTMOD = 7` per channel), and [`PwmTimerA`] drives it on **TA0 or TA1**
+//! (instance-generic over [`crate::capture::Instance`], the capture module's
+//! raw-pointer trait — a Timer_A3 block has `CCR1`/`CCR2`, so two outputs per
+//! block). What this buys:
+//!
+//! - **PWM without Timer_B0** — TB0 stays free, and with it the P1.4–P1.7
+//!   pins; in particular PWM no longer has to contend with **eUSCI_B0** for
+//!   P1.6/P1.7 (the SPI/I2C conflict the TB0 table above describes).
+//! - PWM **and** capture concurrently: PWM on one Timer_A block while the
+//!   other captures (each block is consumed by move — PWM-vs-capture on the
+//!   *same* block stays exclusive, and `TA0` PWM also excludes
+//!   [`crate::timer::Counter`], which lives on TA0).
+//!
+//! | Output | Pin  | Shared with                     |
+//! |--------|------|---------------------------------|
+//! | TA0.1  | P1.0 | green LED2 / TA0.CCI1A          |
+//! | TA0.2  | P1.1 | button S2 / REFOUT / TA0.CCI2A  |
+//! | TA1.1  | P1.2 | TA1.CCI1A (otherwise free)      |
+//! | TA1.2  | P1.3 | TA1.CCI2A (otherwise free)      |
+//!
+//! **TA1 is the natural PWM block** (P1.2/P1.3 are free pins); avoid driving
+//! P1.1 while button S2 could be pressed — the LaunchPad wires S2 straight to
+//! ground, so a pressed button shorts the driven-high pad.
+//!
 //! # Example
 //!
 //! ```ignore
@@ -81,11 +109,13 @@
 //! ```
 
 use core::convert::Infallible;
+use core::marker::PhantomData;
 
 use embedded_hal::pwm::{ErrorType, SetDutyCycle};
 
+use crate::capture::Instance;
 use crate::clocks::Clocks;
-use crate::gpio::{Pin, TimerB, P1};
+use crate::gpio::{Pin, TimerA, TimerB, P1};
 use crate::pac;
 
 /// A Timer_B0 PWM generator in up mode. Owns the Timer0_B7 peripheral and fixes
@@ -331,4 +361,189 @@ pwm_pins! {
     P1 5 => 2, // TB0.2
     P1 6 => 3, // TB0.3 (shared with eUSCI_B0 SIMO/SDA)
     P1 7 => 4, // TB0.4 (shared with eUSCI_B0 SOMI/SCL)
+}
+
+// ---------------------------------------------------------------------------
+// Timer_A PWM (TA0/TA1, instance-generic)
+// ---------------------------------------------------------------------------
+//
+// Same up-mode/OUTMOD machinery as Timer_B0 above, on the two pin-connected
+// Timer_A3 blocks. Register access is raw pointers off the capture module's
+// `Instance::BASE` (the PWM path touches registers the same way `capture`
+// does, and the trait already fixes the base addresses and the
+// consume-by-move exclusivity). Offsets and field values are the Timer_A
+// map (SLAU367P): identical layout to Timer_B for everything PWM needs.
+
+const TA_CCTL0: usize = 0x02; // TAxCCTL0 (CCTLn = CCTL0 + 2n)
+const TA_CCR0: usize = 0x12; // TAxCCR0 (CCRn = CCR0 + 2n)
+const TA_EX0: usize = 0x20; // TAxEX0 (TAIDEX second-stage divider)
+
+// TAxCTL: SMCLK source, ID divider at bits 7:6, up mode, counter clear.
+const TA_TASSEL_SMCLK: u16 = 0x0200;
+const TA_MC_UP: u16 = 0x0010;
+const TA_TACLR: u16 = 0x0004;
+
+// TAxCCTLn whole-word values for the three output states. A full write also
+// zeroes CAP (compare mode) and every interrupt bit — exactly the clean
+// state a PWM channel wants.
+const TA_OUTMOD7: u16 = 0x00E0; // Reset/Set comparator
+const TA_PARK_LOW: u16 = 0x0000; // OUTMOD 0, OUT = 0
+const TA_PARK_HIGH: u16 = 0x0004; // OUTMOD 0, OUT = 1
+
+/// A Timer_A PWM generator in up mode — [`Pwm`]'s instance-generic sibling
+/// for **TA0/TA1** (two outputs per block, `TAx.1`/`TAx.2`; `CCR0` is the
+/// shared period). Owns the PAC peripheral by move, so PWM-vs-capture-vs-
+/// [`crate::timer::Counter`] on one block is an exclusive choice.
+pub struct PwmTimerA<T: Instance> {
+    timer: T,
+    period: u16,
+    freq_hz: u32,
+}
+
+impl<T: Instance> PwmTimerA<T> {
+    /// Configure this Timer_A block for PWM clocked from **SMCLK**, targeting
+    /// `freq_hz` — divider selection, integer-period rounding, and the
+    /// start-at-0%-per-channel contract all as in [`Pwm::new_smclk`].
+    pub fn new_smclk(timer: T, clocks: &Clocks, freq_hz: u32) -> Self {
+        let smclk = clocks.smclk();
+        let (id_code, idex_code, period) = compute_divider(smclk, freq_hz);
+
+        // SAFETY: raw whole-register writes to this owned block's EX0, CCR0
+        // and CTL — the same access pattern the capture module uses on the
+        // same registers.
+        unsafe {
+            // TAIDEX: second-stage divider (÷1…÷8). Latched cleanly by the
+            // TACLR below, per SLAU367's TAIDEX note.
+            ((T::BASE + TA_EX0) as *mut u16).write_volatile(idex_code as u16);
+            // TAxCCR0 = period (the counter's top in up mode).
+            ((T::BASE + TA_CCR0) as *mut u16).write_volatile(period);
+            // TAxCTL: SMCLK, first-stage ID divider, up mode, TACLR.
+            ((T::BASE) as *mut u16).write_volatile(
+                TA_TASSEL_SMCLK | ((id_code as u16) << 6) | TA_MC_UP | TA_TACLR,
+            );
+        }
+
+        let total_div = id_div(id_code) * (idex_code as u32 + 1);
+        PwmTimerA {
+            timer,
+            period,
+            freq_hz: smclk / ((period as u32 + 1) * total_div),
+        }
+    }
+
+    /// The period value (`TAxCCR0`) — the duty resolution, and every
+    /// channel's [`SetDutyCycle::max_duty_cycle`].
+    pub const fn period(&self) -> u16 {
+        self.period
+    }
+
+    /// The actual PWM frequency in Hz, after integer-period rounding.
+    pub const fn frequency(&self) -> u32 {
+        self.freq_hz
+    }
+
+    /// Bind a routed `TAx.n` pin to its PWM channel.
+    ///
+    /// Consumes a pin switched to output-direction [`TimerA`] mode (via
+    /// [`Pin::into_timer_a_output`](crate::gpio::Pin::into_timer_a_output) —
+    /// **not** `into_timer_a_capture`, whose input direction leaves the pad
+    /// undriven); the [`PwmPinA`] bound ties the pin to this timer instance
+    /// *and* its channel number, so a TA0 pin cannot be bound to a TA1
+    /// generator. Initializes the channel at **0% (output low)**.
+    pub fn channel<P: PwmPinA<T>>(&self, _pin: P) -> PwmChannelA<T> {
+        let ch = PwmChannelA {
+            channel: P::CHANNEL,
+            period: self.period,
+            _timer: PhantomData,
+        };
+        ch.apply(0);
+        ch
+    }
+
+    /// Release the underlying timer (left running). Stop it via the returned
+    /// peripheral if desired.
+    pub fn free(self) -> T {
+        self.timer
+    }
+}
+
+/// One Timer_A PWM channel: a single duty-cycle output on `TAx.n`.
+///
+/// Created by [`PwmTimerA::channel`]. Holds only the channel index and the
+/// shared period; register access is raw pointers to **only this channel's**
+/// `TAxCCRn`/`TAxCCTLn` — disjoint from the period register the generator
+/// owns and from the sibling channel (the [`PwmChannel`] soundness argument,
+/// with addresses instead of a stolen PAC handle).
+pub struct PwmChannelA<T: Instance> {
+    channel: u8,
+    period: u16,
+    _timer: PhantomData<T>,
+}
+
+impl<T: Instance> PwmChannelA<T> {
+    /// Apply a duty value, handling the clean-rail endpoints exactly as the
+    /// Timer_B channels do (park via OUTMOD 0 at the rails, Reset/Set
+    /// in between).
+    fn apply(&self, duty: u16) {
+        let n = self.channel as usize;
+        let cctl = (T::BASE + TA_CCTL0 + 2 * n) as *mut u16;
+        let ccr = (T::BASE + TA_CCR0 + 2 * n) as *mut u16;
+        // SAFETY: whole-word writes to this channel's own CCTLn/CCRn only.
+        unsafe {
+            if duty == 0 {
+                cctl.write_volatile(TA_PARK_LOW);
+            } else if duty >= self.period {
+                cctl.write_volatile(TA_PARK_HIGH);
+            } else {
+                ccr.write_volatile(duty);
+                cctl.write_volatile(TA_OUTMOD7);
+            }
+        }
+    }
+}
+
+impl<T: Instance> ErrorType for PwmChannelA<T> {
+    // Setting a duty is just register writes — it cannot fail.
+    type Error = Infallible;
+}
+
+impl<T: Instance> SetDutyCycle for PwmChannelA<T> {
+    fn max_duty_cycle(&self) -> u16 {
+        self.period
+    }
+
+    fn set_duty_cycle(&mut self, duty: u16) -> Result<(), Self::Error> {
+        self.apply(duty.min(self.period));
+        Ok(())
+    }
+}
+
+/// A pin routed to a Timer_A compare output (`TAx.n`), in output-direction
+/// [`TimerA`] mode via [`Pin::into_timer_a_output`](crate::gpio::Pin::
+/// into_timer_a_output). Parameterized by the timer instance so the
+/// pin↔block wiring is checked at compile time; the associated constant is
+/// the `TAxCCRn` channel. Sealed — the map is fixed by the package.
+pub trait PwmPinA<T: Instance>: sealed::Sealed {
+    /// The `TAxCCRn` channel (1 or 2) that drives this pin.
+    const CHANNEL: u8;
+}
+
+macro_rules! pwm_pins_a {
+    ($($Timer:ty: $Port:ident $N:literal => $ch:literal),+ $(,)?) => {$(
+        impl sealed::Sealed for Pin<$Port, $N, TimerA> {}
+        impl PwmPinA<$Timer> for Pin<$Port, $N, TimerA> {
+            const CHANNEL: u8 = $ch;
+        }
+    )+};
+}
+
+// The same pads that serve as TAx.CCInA capture inputs drive TAx.n when the
+// direction is output (SLAS704G Port P1 function table) — see the Timer_A
+// table in the module docs for the LaunchPad sharing caveats (P1.0 = green
+// LED, P1.1 = button S2).
+pwm_pins_a! {
+    pac::Timer0A3: P1 0 => 1, // TA0.1 (green LED2)
+    pac::Timer0A3: P1 1 => 2, // TA0.2 (button S2 / REFOUT)
+    pac::Timer1A3: P1 2 => 1, // TA1.1
+    pac::Timer1A3: P1 3 => 2, // TA1.2
 }
