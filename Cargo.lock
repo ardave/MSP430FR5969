@@ -156,6 +156,8 @@ dependencies = [
  "embedded-hal-nb",
  "embedded-io",
  "embedded-storage",
+ "msp430",
+ "msp430-rt",
  "msp430fr5969",
 ]
 

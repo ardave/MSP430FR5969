@@ -40,3 +40,35 @@ embedded-io = "0.6"
 # Byte-addressable non-volatile storage traits (ReadStorage / Storage). The
 # embedded-hal ecosystem's abstraction for EEPROM/FRAM/flash; used by `fram`.
 embedded-storage = "0.3"
+
+# Only the examples need these: the critical-section single-core impl that
+# Peripherals::take() requires, the #[entry]/#[interrupt] runtime macros, and
+# the Mutex front-end for ISR↔main shared state.
+[dev-dependencies]
+msp430 = { version = "0.4.1", features = ["critical-section-single-core"] }
+msp430-rt = "0.4.1"
+critical-section = "1"
+
+# Getting-started examples (examples/*.rs) — each is a complete flashable
+# firmware, so each needs the runtime (`rt`) and the critical-section impl:
+#
+#   cargo +nightly build --examples --features rt,critical-section
+[[example]]
+name = "blink"
+required-features = ["rt", "critical-section"]
+
+[[example]]
+name = "uart_hello"
+required-features = ["rt", "critical-section"]
+
+[[example]]
+name = "temperature"
+required-features = ["rt", "critical-section"]
+
+[[example]]
+name = "button_wake"
+required-features = ["rt", "critical-section"]
+
+[[example]]
+name = "pwm_fade"
+required-features = ["rt", "critical-section"]

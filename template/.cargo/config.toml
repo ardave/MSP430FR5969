@@ -1,0 +1,35 @@
+[build]
+target = "msp430-none-elf"
+
+[unstable]
+# msp430-none-elf is a tier-3 target with no prebuilt core; build it from
+# source (needs the nightly toolchain + rust-src, see rust-toolchain.toml).
+build-std = ["core"]
+
+[target.msp430-none-elf]
+# TI's msp430-elf-gcc, resolved from PATH. Install TI's MSP430-GCC (a free
+# download, https://www.ti.com/tool/MSP430-GCC-OPENSOURCE) and add its bin/
+# directory to PATH — or point at it without touching PATH via the override:
+#   export CARGO_TARGET_MSP430_NONE_ELF_LINKER=/path/to/msp430-gcc/bin/msp430-elf-gcc
+linker = "msp430-elf-gcc"
+rustflags = [
+    "-C", "link-arg=-mmcu=msp430fr5969",
+    # msp430-rt (not gcc's crt0) owns the Reset handler and startup.
+    "-C", "link-arg=-nostartfiles",
+    # msp430-rt's linker script; its build.rs puts link.x on the search path.
+    # It INCLUDEs memory.x/device.x, which the PAC's build.rs provides.
+    "-C", "link-arg=-T", "-C", "link-arg=link.x",
+    # Garbage-collect unreferenced sections — without this, dead code (notably
+    # anything dragging in core::fmt, ~30 KB) can overflow the 48 KB FRAM.
+    "-C", "link-arg=-Wl,--gc-sections",
+    # libcore references the MSP430 EABI runtime routines once multiply/divide
+    # code exists: division lives in libgcc, multiplication in the F5-family
+    # hardware-multiply library. Rust emits baseline MSP430 (not MSP430X)
+    # code, so force the matching `430/` multilib — with -mmcu alone gcc picks
+    # the MSP430X variant and the link fails with an ISA mismatch.
+    "-C", "link-arg=-mcpu=msp430",
+    "-C", "link-arg=-Wl,--start-group",
+    "-C", "link-arg=-lgcc",
+    "-C", "link-arg=-lmul_f5",
+    "-C", "link-arg=-Wl,--end-group",
+]
