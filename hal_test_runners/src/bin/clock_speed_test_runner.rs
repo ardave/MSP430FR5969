@@ -46,7 +46,7 @@
 //! # Framed output for the host runner
 //!
 //! ```text
-//! clkspd mclk=16000000 smclk=16000000 nwaits=1 d10=10231 vlo=9382 rst=...
+//! clkspd mclk=16000000 smclk=16000000 nwaits=1 d10=10231 vlo=9382 vlotries=1 rst=...
 //! CLKSPD_TEST_BEGIN
 //! CLKSPD FRCTL OK
 //! CLKSPD DELAY TIMER OK
@@ -138,9 +138,26 @@ fn main() -> ! {
     // The VLO doesn't follow the DCO, so a wrong DCO range doubles/halves the
     // measured frequency out of the gate. Period ~106 µs ≈ 213 ticks at the
     // 2 MHz capture tick; 4 periods with a 500 µs per-edge budget.
+    //
+    // Retried up to 5× (10 ms apart): rare boots come up with ACLK showing
+    // no edges at the first sample (observed 2026-07-11 as a frozen `vlo=0`
+    // FAIL; the `vlo_soak` fixture measures the rate and recovery profile).
+    // Retrying doesn't weaken the verdict's real quarry — a DCO stuck in the
+    // wrong range shifts *every* attempt 2× out of the gate — it only
+    // absorbs a transiently dead ACLK. `vlotries` in the info line reports
+    // which attempt delivered, so the flake stays visible in the transcript.
     let cap = CaptureTimer::new_smclk(p.timer_1_a3, &clocks, Divider::Div8);
     let mut aclk_ch = cap.capture_aclk(Edge::Rising);
-    let vlo_hz = aclk_ch.frequency_hz(4, 1_000).unwrap_or(0);
+    let mut vlo_hz = 0u32;
+    let mut vlo_tries = 0u32;
+    while vlo_tries < 5 {
+        vlo_tries += 1;
+        if let Ok(hz) = aclk_ch.frequency_hz(4, 1_000) {
+            vlo_hz = hz;
+            break;
+        }
+        delay.delay_ms(10);
+    }
     let vlo_ok = (5_000..=15_000).contains(&vlo_hz);
 
     // --- CLKSPD FRAM RW: data path under the new wait-state setting ---------
@@ -168,6 +185,8 @@ fn main() -> ! {
         write_dec(&mut tx, d10_us);
         tx.write_all(b" vlo=").ok();
         write_dec(&mut tx, vlo_hz);
+        tx.write_all(b" vlotries=").ok();
+        write_dec(&mut tx, vlo_tries);
         tx.write_all(b" rst=").ok();
         tx.write_all(reset.primary().map_or("none", |r| r.as_str()).as_bytes())
             .ok();
