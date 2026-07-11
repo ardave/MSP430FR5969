@@ -20,7 +20,7 @@ arming order — which are documented in the relevant module docs.
 | `gpio` | Typed pins, digital I/O traits, port edge interrupts, LPMx.5 pin-state unlock |
 | `serial` | eUSCI_A UART (polling, RX interrupt, DMA-paced TX/RX) |
 | `spi` | eUSCI_A0/A1/B0 SPI master (CPU-paced and DMA-paced `SpiBus`) |
-| `i2c` | eUSCI_B0 I2C master |
+| `i2c` | eUSCI_B0 I2C master + slave (slave: code-complete, hardware verification pending) |
 | `adc` | ADC12_B: ratiometric + VREF-referenced reads, interrupts, DMA-drained repeat mode |
 | `dma` | 3-channel DMA: block copies, peripheral pacing primitives, `DMAIV` demux |
 | `aes` | AES256 accelerator (ECB primitive, software CBC chaining) |
