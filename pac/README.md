@@ -17,19 +17,12 @@ generated from its SVD file with [svd2rust](https://crates.io/crates/svd2rust).
 
 ## Deviations from generated code
 
-`src/lib.rs` is svd2rust output with two hand-applied patches (both would be
-lost on regeneration; the msp430-flavored svd2rust fork produces both
-correctly at the source):
-
-1. **Vector-table union width.** svd2rust emitted the vector-table `Vector`
-   union with a `_reserved: u32` variant — 4 bytes, wrong for a 16-bit
-   target. The doubled table width overran the `VECTORS` memory region once
-   msp430-rt `KEEP`s and places the table. Patched to `u16`.
-2. **Interrupt handler ABI.** The interrupt handler declarations (the
-   `extern` block and `Vector::_handler`) were emitted `extern "C"`; they are
-   patched to `extern "msp430-interrupt"` (handlers return with `RETI`, not
-   `RET`), gated on the `rt` feature so the non-`rt` build does not need the
-   unstable `abi_msp430_interrupt` feature.
+`src/lib.rs` is `svd2rust --target msp430` output (v0.37.1), run through
+`rustfmt`, with one hand-applied patch: the unstable `abi_msp430_interrupt`
+feature and the vector-table `Vector` union are gated on the `rt` feature,
+so the non-`rt` build does not require it. (The msp430 target flavor already
+emits the 16-bit vector slots and the `extern "msp430-interrupt"` handler
+ABI correctly at the source.)
 
 `memory.x`, `device.x`, and `build.rs` are hand-written, not generated.
 

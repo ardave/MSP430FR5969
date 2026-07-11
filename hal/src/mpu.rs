@@ -29,7 +29,7 @@
 //!
 //! ```ignore
 //! use hal::mpu::{Access, Config, Mpu};
-//! let mut mpu = Mpu::new();
+//! let mut mpu = Mpu::new(p.mpu);        // consume the PAC peripheral
 //! mpu.enable(&Config {
 //!     border1: 0x1_0000,          // seg1 = both lower-bank code+data,
 //!     border2: 0x1_0000,          // seg2 = empty,
@@ -41,21 +41,28 @@
 //! }).unwrap();
 //! ```
 //!
-//! # Register access: why this module bypasses the PAC entirely
+//! # Register access: typed, except the password lane
 //!
-//! Two independent reasons, one esoteric each:
+//! The driver owns the PAC's [`pac::Mpu`] block (consume-by-move, like every
+//! other peripheral here) and goes through its typed registers for reads and
+//! for the plain 16-bit data registers (`MPUSEGB1`/`MPUSEGB2`/`MPUSAM`/
+//! `MPUCTL1`). Two things stay raw byte pointers, deliberately:
 //!
-//! 1. **The PAC has no MPU.** `pac/src/lib.rs` was generated from an SVD
-//!    revision that lacked the MPU block; the checked-in
-//!    `msp430fr5969.svd` *does* carry it (base `0x05A0`), so a future
-//!    regeneration (msp430 svd2rust flavor, see "Shortcomings in the PAC
-//!    crate") will grow it. Until then: raw volatile pointers, the same
-//!    pattern [`crate::clocks`] uses for `CSCTL0_H` and [`crate::power`] for
-//!    `PMMCTL0`.
-//! 2. **It wouldn't help.** Even the SVD's MPU model omits the `MPUPW`
-//!    password field, exactly like `WDTCTL`/`PMMCTL0`/`CSCTL0` — a generated
-//!    `modify()` would echo back a wrong key. This family's password modules
-//!    are all landmines behind field-level PAC APIs; see [`crate::watchdog`].
+//! 1. **`MPUCTL0` writes.** Its high byte is the `MPUPW` password lane — a
+//!    field the SVD does not model. Reads return `0x96` there, and every
+//!    *word* write must carry `0xA5` or the chip takes a PUC — so a PAC
+//!    `modify()` on `MPUCTL0` would read `0x96`, echo it back as the
+//!    password, and reset the chip. The same landmine as `WDTCTL`/`PMMCTL0`
+//!    (see [`crate::watchdog`]). **Never touch `MPUCTL0` through the PAC's
+//!    field API.**
+//! 2. **The open/close bracket.** The password is byte-granular: writing the
+//!    high byte alone opens/closes the register file while leaving
+//!    `MPUENA`/`MPULOCK`/`MPUSEGIE` in the low byte untouched — which is what
+//!    lets a `SYSNMI` handler clear flags without momentarily dropping
+//!    protection. The PAC's API is 16-bit-only (the same limitation
+//!    [`crate::crc`] works around), so these byte-lane writes cannot be
+//!    expressed through it. The addresses derive from [`pac::Mpu::PTR`], so
+//!    the raw accesses stay anchored to the PAC's register map.
 //!
 //! # The password discipline (`MPUPW`)
 //!
@@ -66,9 +73,7 @@
 //! triggers a PUC (`SYSRSTIV` = `0x22`, [`crate::sys::ResetReason::MpuPassword`]).
 //! This driver therefore brackets every register sequence with byte-writes to
 //! `MPUCTL0_H` — open `0xA5`, work, close `0x00` — the sequence TI's own
-//! examples use. Byte-writing the *high* byte leaves `MPUENA`/`MPULOCK`/
-//! `MPUSEGIE` in the low byte untouched, so flags can be cleared without
-//! momentarily dropping protection.
+//! examples use.
 //!
 //! **The NMI re-lock race:** MPU violation NMIs are non-maskable — a critical
 //! section cannot hold them off. If a violation NMI fires *while thread-mode
@@ -78,8 +83,8 @@
 //! that keeps this theoretical: configure the MPU *before* the protected
 //! regions can be touched, and treat reconfiguration as something you don't
 //! do concurrently with code that may violate. (Maskable interrupts are no
-//! hazard — only this module touches MPU registers, per the singleton
-//! discipline on [`Mpu`].)
+//! hazard — only this module touches MPU registers, and [`Mpu`] owns the
+//! peripheral, so a second driver instance cannot exist without `steal()`.)
 //!
 //! # Lock-until-BOR
 //!
@@ -103,25 +108,26 @@
 //! the safe first move, and what the `mpu_test_runner` fixture does.
 
 use crate::mpu_seg;
+use crate::pac;
 
 pub use crate::mpu_seg::{
     segment_containing, Access, MpuError as Error, Violation, MAIN_END, MAIN_START,
 };
 
-// --- Register map (SVD: MPU block at base 0x05A0) ---
-/// `MPUCTL0` low byte: `MPUENA` / `MPULOCK` / `MPUSEGIE`.
-const MPUCTL0_L: usize = 0x05A0;
-/// `MPUCTL0` high byte: the password lane (write `0xA5` to open, anything
+/// `MPUCTL0` low byte lane: `MPUENA` / `MPULOCK` / `MPUSEGIE`. Byte-granular
+/// so the password lane above it is never written along with the bits.
+/// (Derived from the PAC's register map at runtime — const pointer
+/// arithmetic on the integer-derived `PTR` is rejected by const eval.)
+#[inline]
+fn mpuctl0_l() -> *mut u8 {
+    pac::Mpu::PTR as *mut u8
+}
+/// `MPUCTL0` high byte lane: the password (write `0xA5` to open, anything
 /// else to close; reads as `0x96`).
-const MPUCTL0_H: usize = 0x05A1;
-/// `MPUCTL1`: the five violation flags (read anytime; write while open).
-const MPUCTL1: usize = 0x05A2;
-/// `MPUSEGB2`: upper border, address `>> 4`.
-const MPUSEGB2: usize = 0x05A4;
-/// `MPUSEGB1`: lower border, address `>> 4`.
-const MPUSEGB1: usize = 0x05A6;
-/// `MPUSAM`: the four access nibbles (see `mpu_seg::sam_value`).
-const MPUSAM: usize = 0x05A8;
+#[inline]
+fn mpuctl0_h() -> *mut u8 {
+    (pac::Mpu::PTR as usize + 1) as *mut u8
+}
 
 /// `MPUCTL0_H` open value (`MPUPW >> 8`).
 const KEY_OPEN: u8 = 0xA5;
@@ -140,47 +146,39 @@ const SEG3IFG: u16 = 0x0004;
 const SEGIIFG: u16 = 0x0008;
 const SEGIPIFG: u16 = 0x0010;
 
-#[inline]
-fn rd8(addr: usize) -> u8 {
-    // SAFETY: `addr` is one of the MPU register byte lanes above — always
-    // present, always readable (reads are not password-gated).
-    unsafe { (addr as *const u8).read_volatile() }
-}
-
-#[inline]
-fn rd16(addr: usize) -> u16 {
-    // SAFETY: as `rd8`, word lane.
-    unsafe { (addr as *const u16).read_volatile() }
-}
-
-/// Write an MPU register. Callers must hold the bracket open (see `open`) —
-/// a write while closed is a password violation and PUCs the chip.
-#[inline]
-fn wr16(addr: usize, value: u16) {
-    // SAFETY: `addr` is an MPU register; the password discipline (open
-    // bracket) is upheld by every caller in this module.
-    unsafe { (addr as *mut u16).write_volatile(value) }
-}
-
-#[inline]
-fn wr8(addr: usize, value: u8) {
-    // SAFETY: as `wr16`, byte lane.
-    unsafe { (addr as *mut u8).write_volatile(value) }
-}
-
 /// Open the MPU registers for writing: `0xA5` into the password lane only.
 /// High-byte write, so `MPUENA`/`MPULOCK`/`MPUSEGIE` are untouched — the MPU
 /// keeps enforcing while its registers are being edited.
 #[inline]
 fn open() {
-    wr8(MPUCTL0_H, KEY_OPEN);
+    // SAFETY: the password byte lane exists whenever the MPU does; byte
+    // writes to it are the TI-documented open sequence.
+    unsafe { mpuctl0_h().write_volatile(KEY_OPEN) }
 }
 
 /// Close the MPU registers (any non-key value locks the password). Same
 /// high-byte-only rule as `open`.
 #[inline]
 fn close() {
-    wr8(MPUCTL0_H, KEY_CLOSE);
+    // SAFETY: as `open`.
+    unsafe { mpuctl0_h().write_volatile(KEY_CLOSE) }
+}
+
+/// Write the `MPUCTL0` low byte (`MPUENA`/`MPULOCK`/`MPUSEGIE`) without
+/// touching the password lane. Callers must hold the bracket open — a write
+/// while closed is a password violation and PUCs the chip.
+#[inline]
+fn write_ctl0_low(value: u8) {
+    // SAFETY: byte lane of an always-present register; the password
+    // discipline (open bracket) is upheld by every caller in this module.
+    unsafe { mpuctl0_l().write_volatile(value) }
+}
+
+/// Read the `MPUCTL0` low byte (reads are never password-gated).
+#[inline]
+fn read_ctl0_low() -> u8 {
+    // SAFETY: plain read of an always-present register byte lane.
+    unsafe { mpuctl0_l().read_volatile() }
 }
 
 /// The five `MPUCTL1` violation flags, as one copyable snapshot.
@@ -271,21 +269,25 @@ impl Config {
     }
 }
 
-/// The MPU driver.
-///
-/// A zero-sized handle (there is no PAC peripheral to own — see the module
-/// docs). Like [`crate::fram::InfoFram`], holding two is not memory-unsafe
-/// but is a shared-mutable-resource hazard: the password bracket assumes no
-/// other code opens/closes it concurrently. Treat it as a singleton.
-#[derive(Debug, Default)]
+/// The MPU driver. Owns the PAC peripheral (consume-by-move), so a second
+/// driver instance — and with it a concurrent password bracket — cannot exist
+/// without `steal()`.
+#[derive(Debug)]
 pub struct Mpu {
-    _private: (),
+    regs: pac::Mpu,
 }
 
 impl Mpu {
-    /// Create the MPU handle. No register access.
-    pub const fn new() -> Self {
-        Mpu { _private: () }
+    /// Create the MPU driver, consuming the PAC peripheral. No register
+    /// access.
+    pub const fn new(regs: pac::Mpu) -> Self {
+        Mpu { regs }
+    }
+
+    /// Release the PAC peripheral (e.g. to re-`take()`-style plumbing in
+    /// tests). The hardware keeps whatever configuration is installed.
+    pub fn free(self) -> pac::Mpu {
+        self.regs
     }
 
     /// Validate `config`, program it, and enable enforcement — one password
@@ -311,11 +313,13 @@ impl Mpu {
         let sam = mpu_seg::sam_value(config.seg1, config.seg2, config.seg3, config.info);
 
         open();
-        wr16(MPUSEGB1, b1);
-        wr16(MPUSEGB2, b2);
-        wr16(MPUSAM, sam);
-        wr16(MPUCTL1, 0); // discard stale flags
-        wr8(MPUCTL0_L, ENA | if config.nmi { SEGIE } else { 0 });
+        // SAFETY (bits): whole-register values computed by the host-tested
+        // mpu_seg math; every bit pattern is architecturally valid.
+        self.regs.mpusegb1().write(|w| unsafe { w.bits(b1) });
+        self.regs.mpusegb2().write(|w| unsafe { w.bits(b2) });
+        self.regs.mpusam().write(|w| unsafe { w.bits(sam) });
+        self.regs.mpuctl1().write(|w| unsafe { w.bits(0) }); // discard stale flags
+        write_ctl0_low(ENA | if config.nmi { SEGIE } else { 0 });
         close();
         Ok(())
     }
@@ -328,7 +332,7 @@ impl Mpu {
             return Err(Error::Locked);
         }
         open();
-        wr8(MPUCTL0_L, 0);
+        write_ctl0_low(0);
         close();
         Ok(())
     }
@@ -345,15 +349,15 @@ impl Mpu {
     /// borders unchanged. This driver refuses in software first
     /// ([`Error::Locked`]) so callers get an error instead of silence.
     pub fn lock(&mut self) {
-        let current = rd8(MPUCTL0_L) & (ENA | SEGIE);
+        let current = read_ctl0_low() & (ENA | SEGIE);
         open();
-        wr8(MPUCTL0_L, current | LOCK);
+        write_ctl0_low(current | LOCK);
         close();
     }
 
     /// Is enforcement on (`MPUENA`)?
     pub fn is_enabled(&self) -> bool {
-        rd8(MPUCTL0_L) & ENA != 0
+        self.regs.mpuctl0().read().mpuena().bit_is_set()
     }
 
     /// Read back the installed borders as absolute addresses
@@ -363,32 +367,42 @@ impl Mpu {
     /// didn't).
     pub fn borders(&self) -> (u32, u32) {
         (
-            mpu_seg::border_to_addr(rd16(MPUSEGB1)),
-            mpu_seg::border_to_addr(rd16(MPUSEGB2)),
+            mpu_seg::border_to_addr(self.regs.mpusegb1().read().bits()),
+            mpu_seg::border_to_addr(self.regs.mpusegb2().read().bits()),
         )
     }
 
     /// Is the register file frozen until BOR (`MPULOCK`)?
     pub fn is_locked(&self) -> bool {
-        rd8(MPUCTL0_L) & LOCK != 0
+        self.regs.mpuctl0().read().mpulock().bit_is_set()
     }
 
     /// Snapshot the latched violation flags (plain read, no password).
     pub fn violations(&self) -> Violations {
-        violation_flags()
+        Violations {
+            bits: self.regs.mpuctl1().read().bits(),
+        }
     }
 
     /// Clear all latched violation flags. See [`clear_violation_flags`].
     pub fn clear_violations(&mut self) {
-        clear_violation_flags();
+        open();
+        self.regs.mpuctl1().write(|w| unsafe { w.bits(0) });
+        close();
     }
 }
 
 /// Snapshot `MPUCTL1` — the thread-mode *or* ISR-side read (reads are never
 /// password-gated). Free function per the ISR convention (driver structs stay
-/// in thread mode; handlers use module-level free functions).
+/// in thread mode; handlers use module-level free functions backed by
+/// `steal()`).
 pub fn violation_flags() -> Violations {
-    Violations { bits: rd16(MPUCTL1) }
+    // SAFETY: read-only access to a flag register; cannot race the owning
+    // driver's writes in a way that corrupts state.
+    let regs = unsafe { pac::Mpu::steal() };
+    Violations {
+        bits: regs.mpuctl1().read().bits(),
+    }
 }
 
 /// Clear all five `MPUCTL1` violation flags — one open→clear→close password
@@ -400,7 +414,10 @@ pub fn violation_flags() -> Violations {
 /// set keeps the source pending. Mind the re-lock race in the module docs if
 /// thread code also brackets concurrently.
 pub fn clear_violation_flags() {
+    // SAFETY: ISR-side steal per the module convention; touches only the
+    // flag register, under its own open/close bracket.
+    let regs = unsafe { pac::Mpu::steal() };
     open();
-    wr16(MPUCTL1, 0);
+    regs.mpuctl1().write(|w| unsafe { w.bits(0) });
     close();
 }
