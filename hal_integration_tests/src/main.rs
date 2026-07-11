@@ -28,6 +28,7 @@ mod ref_a_tests;
 mod fram_tests;
 mod rtc_tests;
 mod rtc_tick_tests;
+mod vlo_soak_tests;
 mod watchdog_tests;
 mod wdt_interval_tests;
 
@@ -82,6 +83,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     // (`capture` above is the hands-free variant: PWM verdicts may SKIP.)
     if wanted("capture_jumper") && !only.is_empty() {
         capture_tests::run_with_jumper()?;
+    }
+    // vlo_soak is an instrument (200 self-reboots measuring the ACLK boot
+    // race), not a regression gate; run it by name only.
+    if wanted("vlo_soak") && !only.is_empty() {
+        vlo_soak_tests::run()?;
     }
 
     Ok(())
