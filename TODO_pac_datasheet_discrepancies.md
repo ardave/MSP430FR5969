@@ -10,23 +10,28 @@ research what's going on before deciding how to fix it.
 
 ## High Impact
 
-### [ ] 1. Timer_A0 is missing 2 capture/compare channels
+### [x] 1. ~~Timer_A0 is missing 2 capture/compare channels~~ — RESOLVED: datasheet erratum, not an SVD gap (HW-established 2026-07-11)
 
-The real TA0 hardware has 5 CC registers (CCR0-CCR4), but the SVD file
-(`msp430fr5969.svd`) only defines 3 (CCR0-CCR2). Because the PAC is
-auto-generated from the SVD, it's also missing CCR3 and CCR4.
+**The SVD and PAC are correct; SLAS704G's TA0 register table is the erratum.**
+TA0 on this silicon has exactly 3 CC channels (CCR0-CCR2) — there is nothing
+to add to the SVD, the PAC, or the HAL.
 
-This means you can't access TA0CCR3/TA0CCR4 or TA0CCTL3/TA0CCTL4 through the
-PAC at all. The PAC calls this peripheral `Timer0_A3` (implying 3 channels)
-when it should be `Timer0_A5`.
+The claim above came from the datasheet's TA0 register-offset table
+(`reference/02_memory_map.md` lines 466-480), which lists TA0CCTL3/4 and
+TA0CCR3/4 — but SLAS704G contradicts itself: its own §6.10.10 prose says
+"TA0 and TA1 ... with **three** capture/compare registers each", and its
+Table 6-13 signal connections define CCR0-CCR2 only. TI's `msp430fr5969.h`
+(`Timer0_A3`, CCR0-2 only) and the SVD both agree with the prose. The
+register table was most plausibly copy-pasted from a sibling part with a
+five-channel TA0.
 
-- **Datasheet ref:** `reference/13_timer_a.md` lines 11-16, also
-  `reference/02_memory_map.md` lines 466-480
-- **SVD location:** `msp430fr5969.svd` around the TIMER_0_A3 peripheral
-- **Missing registers:** TA0CCTL3 (offset 0x08), TA0CCTL4 (offset 0x0A),
-  TA0CCR3 (offset 0x18), TA0CCR4 (offset 0x1A)
-- **To fix:** Patch the SVD to add the missing registers, then regenerate
-  the PAC with `svd2rust`
+Settled on silicon by `--bin ta0_probe_test_runner` (host suite `ta0_probe`,
+in the default set): raw-pointer probes at the putative addresses
+(0x0348/0x034A, 0x0358/0x035A) with channel 2 as positive control. Result:
+registers hold no state, a software-CCIS capture never fires CCIFG, TA0IV
+never presents 0x06/0x08, and nothing aliases onto CCR0-CCR2. The suite
+stays in the default set with the ABSENT findings pinned, so a different
+die revision (or a probe regression) fails loudly.
 
 ### [ ] 2. MPU (Memory Protection Unit) defined in SVD but missing from PAC
 
