@@ -100,7 +100,9 @@ noted otherwise):
   queue, and DMA-paced TX/RX.
 - **`spi`** — instance-generic 3-pin SPI master over eUSCI_A0/A1/B0
   (`embedded-hal` `SpiBus`), plus `SpiDma` (two-channel DMA pacing).
-- **`i2c`** — eUSCI_B0 I²C master (`embedded-hal` I²C traits).
+- **`i2c`** — eUSCI_B0 I²C master (`embedded-hal` I²C traits) and slave (native
+  event-pump API, hardware SCL stretching; *code-complete, hardware
+  verification pending*).
 - **`dma`** — 3-channel DMA controller: safe CPU-halting block copies, the
   peripheral-pacing primitives serial/spi/adc build on, and the `DMA`-vector
   demux `dma::read_iv`.
@@ -157,7 +159,12 @@ noted otherwise):
 
 Remaining coverage and follow-ups from code review.
 
-- [ ] **I²C slave mode** — eUSCI_B currently implements master only.
+- [x] **I²C slave mode** — implemented (`i2c::I2cSlave`, a native event-pump
+  API: own-address setup with general-call support, hardware SCL stretching,
+  repeated-START turnarounds, speculative-TX-byte flush at STOP, `UCB0IV`
+  demux). *Code-complete; hardware verification pending* — the
+  `i2c_slave_test_runner` register-file fixture is ready for a
+  hardware-in-the-loop strategy with an external master.
 - [x] **Timer capture mode** — `capture` implements Timer_A input capture
   (TA0/TA1 generic; pin, Comp_E, ACLK, and software sources). Code-complete;
   hardware verification pending.

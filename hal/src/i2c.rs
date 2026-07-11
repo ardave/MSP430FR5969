@@ -1,4 +1,4 @@
-//! eUSCI_B0 I2C master driver (`embedded_hal::i2c::I2c`).
+//! eUSCI_B0 I2C driver: master (`embedded_hal::i2c::I2c`) and slave.
 //!
 //! I2C is the other synchronous-serial personality of eUSCI_B0 (the same
 //! peripheral [`crate::spi`] drives as SPI — they share one register block at
@@ -8,11 +8,22 @@
 //! every exchange between a START and a STOP; each byte is acknowledged by the
 //! receiver pulling SDA low for a ninth clock (ACK) or leaving it high (NACK).
 //!
-//! This driver is a single-master, blocking, polled I2C **master** for 7-bit
-//! addresses. It implements [`embedded_hal::i2c::I2c`], whose one required
-//! method — [`transaction`](embedded_hal::i2c::I2c::transaction) — is where all
-//! the bus framing lives; `read`/`write`/`write_read` are the trait's provided
-//! methods built on top of it.
+//! Two mutually exclusive personalities, each consuming the PAC peripheral:
+//!
+//! - [`I2cExt::into_i2c`] → [`I2c`], a single-master, blocking, polled
+//!   **master** for 7-bit addresses. It implements
+//!   [`embedded_hal::i2c::I2c`], whose one required method —
+//!   [`transaction`](embedded_hal::i2c::I2c::transaction) — is where all the
+//!   bus framing lives; `read`/`write`/`write_read` are the trait's provided
+//!   methods built on top of it.
+//! - [`I2cSlaveExt::into_i2c_slave`] → [`I2cSlave`], an event-pump **slave**
+//!   (embedded-hal 1.0 has no slave trait, so the API is native). The MSP430
+//!   answers a 7-bit own address and serves master-framed transactions; see
+//!   the slave section below for the event model and the hardware's built-in
+//!   clock stretching. *Code-complete against SLAU367P; hardware verification
+//!   pending* — unlike the master path, no fixture has exercised this on
+//!   silicon yet, and the IV table in [`crate::i2c::decode_iv`] carries the
+//!   same caveat.
 //!
 //! # Why raw register access (like [`crate::spi`] and [`crate::serial`])
 //!
@@ -53,16 +64,21 @@ const BASE: usize = 0x0640;
 const CTLW0: usize = 0x00; // Control word 0 (reset, mode, START/STOP/dir, clock)
 const CTLW1: usize = 0x02; // Control word 1 (clock-low timeout, auto-stop, ...)
 const BRW: usize = 0x06; // Bit-rate prescaler (SCL = BRCLK / UCBRW)
+const STATW: usize = 0x08; // Status word (UCBBUSY, UCGC, UCSCLLOW, byte counter)
 const RXBUF: usize = 0x0C; // Receive buffer
 const TXBUF: usize = 0x0E; // Transmit buffer
-const I2CSA: usize = 0x20; // Slave address (7-bit, right-justified)
+const I2COA0: usize = 0x14; // Own address 0 (slave mode: address + UCOAEN/UCGCEN)
+const I2CSA: usize = 0x20; // Slave address (7-bit, right-justified; master mode)
+const IE: usize = 0x2A; // Interrupt enables (same bit layout as IFG)
 const IFG: usize = 0x2C; // Interrupt flags (0x2C on eUSCI_B, as in SPI)
+const IV: usize = 0x2E; // Interrupt vector (read clears the served flag)
 
 // CTLW0 bit fields (SLAU367P eUSCI_B I2C register description). The low byte is
 // UCB0CTL1, the high byte UCB0CTL0; together they form this 16-bit word.
 const UCSWRST: u16 = 1 << 0; // Software reset (hold module in reset while = 1)
 const UCTXSTT: u16 = 1 << 1; // Transmit START condition (self-clears after addr)
 const UCTXSTP: u16 = 1 << 2; // Transmit STOP condition (self-clears after STOP)
+const UCTXNACK: u16 = 1 << 3; // Slave: NACK the next received byte (self-clears)
 const UCTR: u16 = 1 << 4; // Transmitter (1) / receiver (0)
 const UCSSEL_SMCLK: u16 = 0b10 << 6; // BRCLK <- SMCLK (UCSSELx = 10)
 const UCSYNC: u16 = 1 << 8; // 1 = synchronous mode; must be set for I2C
@@ -72,9 +88,16 @@ const UCMST: u16 = 1 << 11; // 1 = master mode
 // CTLW1 bit fields.
 const UCCLTO_28MS: u16 = 0b01 << 6; // Clock-low timeout ~28 ms (UCCLTOx = 01)
 
-// IFG bit fields (low byte of the flags word).
-const UCRXIFG: u16 = 1 << 0; // Receive buffer full (a byte arrived)
-const UCTXIFG: u16 = 1 << 1; // Transmit buffer empty (ready for next byte)
+// STATW bit fields.
+const UCBBUSY: u16 = 1 << 4; // Bus busy (between a START and the next STOP)
+const UCGC: u16 = 1 << 5; // Current frame was addressed via the general call
+
+// IFG bit fields (same layout in IE). In I2C mode the RX/TX flags are
+// per-own-address; only own-address 0 (UCRXIFG0/UCTXIFG0) is used here.
+const UCRXIFG: u16 = 1 << 0; // UCRXIFG0: receive buffer full (a byte arrived)
+const UCTXIFG: u16 = 1 << 1; // UCTXIFG0: transmit buffer empty (ready for next byte)
+const UCSTTIFG: u16 = 1 << 2; // Slave: START + own address received
+const UCSTPIFG: u16 = 1 << 3; // Slave: STOP received
 const UCNACKIFG: u16 = 1 << 5; // NACK received (no/!ACK from the addressed slave)
 const UCCLTOIFG: u16 = 1 << 7; // Clock-low timeout elapsed (SCL held low too long)
 
@@ -543,6 +566,381 @@ impl I2cExt for pac::UsciB0I2cMode {
         // Consuming the PAC singleton proves exclusive ownership of eUSCI_B0;
         // the driver then drives it through raw access.
         I2c::init(config)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Slave mode
+// ---------------------------------------------------------------------------
+
+// Pure own-address encoding/validation + UCBxIV decode (host-tested; see
+// unit_tests/src/i2c_slave.rs).
+pub use crate::i2c_slave::{decode_iv, encode_own_address, AddressError, SlaveIv};
+pub use crate::i2c_slave::{
+    IV_ARBITRATION_LOST, IV_BYTE_COUNTER, IV_CLOCK_LOW_TIMEOUT, IV_NACK, IV_NINTH_BIT, IV_NONE,
+    IV_RX, IV_START, IV_STOP, IV_TX,
+};
+
+/// I2C slave configuration: the 7-bit own address, plus whether to also
+/// answer the general call (address `0x00`).
+#[derive(Clone, Copy, Debug)]
+pub struct SlaveConfig {
+    /// Own address, 7-bit (`0x08..=0x77` — the spec-reserved addresses at
+    /// both ends are rejected at construction).
+    pub address: u8,
+    /// Also respond to the I2C general call (`UCGCEN`). During a transaction,
+    /// [`I2cSlave::addressed_as_general_call`] tells the two apart.
+    pub general_call: bool,
+}
+
+impl SlaveConfig {
+    /// Configuration for a plain single-address slave.
+    pub fn new(address: u8) -> Self {
+        SlaveConfig {
+            address,
+            general_call: false,
+        }
+    }
+
+    /// Also answer the general call (builder style).
+    pub fn general_call(mut self) -> Self {
+        self.general_call = true;
+        self
+    }
+}
+
+/// One bus event, as surfaced by [`I2cSlave::poll`].
+///
+/// A master-write transaction arrives as `Start { read: false }`,
+/// `Received(..)` per byte, then `Stop`. A master-read arrives as
+/// `Start { read: true }`, `TxRequest` per byte (answer each with
+/// [`I2cSlave::write_byte`]), then `Stop`. A repeated START — the
+/// write-then-read register idiom — is simply a second `Start` with no
+/// intervening `Stop`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SlaveEvent {
+    /// This slave was addressed. `read` is the master's R/W bit: `true` means
+    /// the master reads (this slave transmits), `false` means the master
+    /// writes (this slave receives).
+    Start { read: bool },
+    /// A data byte arrived (already drained from RXBUF — draining is what
+    /// releases the hardware's SCL stretch, so `poll` never sits on it).
+    Received(u8),
+    /// The master wants the next byte and the eUSCI is stretching SCL until
+    /// [`I2cSlave::write_byte`] supplies it. Reported repeatedly until then.
+    TxRequest,
+    /// STOP received; the transaction is over.
+    Stop,
+}
+
+/// A configured eUSCI_B0 I2C slave: an event pump the application polls.
+///
+/// # The hardware does the hard real-time part
+///
+/// The eUSCI ACKs its own address and **stretches SCL** (holds it low) in
+/// silicon whenever software is behind: after a received byte until RXBUF is
+/// read, and when addressed for read until TXBUF is written. So a polled
+/// main-loop slave is *correct* at any polling latency — a slow loop degrades
+/// bus throughput, never data integrity. (Stretching is the I2C-legal slave
+/// behavior; the driver leaves the `UCCLTO` clock-low timeout off, unlike the
+/// master, because the "stuck" SCL it would flag is this slave doing its job.
+/// An impatient master with its own timeout is the master's problem to
+/// configure.)
+///
+/// # What the application owns
+///
+/// Everything above framing is protocol: register files, command parsers,
+/// FIFO streams. The driver deliberately has no internal buffer and no
+/// transaction abstraction — it hands over [`SlaveEvent`]s and lets the
+/// application define what the bytes mean (see the `i2c_slave_test_runner`
+/// fixture for the classic pointer-plus-autoincrement register-file pattern).
+///
+/// # Hardware-verification status
+///
+/// Code-complete against SLAU367P §"I2C Slave Mode"; **not yet exercised on
+/// silicon**. Known-delicate spots called out inline: the speculative-TX-byte
+/// flush at STOP, and the IV slot values (see `i2c_slave.rs`).
+pub struct I2cSlave {
+    /// Set while the current transaction has this slave transmitting (master
+    /// reading). Gates `TxRequest` delivery: in I2C mode `UCTXIFG0`'s idle
+    /// state after reset-release isn't load-bearing for us — a TX request is
+    /// only meaningful inside a master-read transaction.
+    transmitting: bool,
+    _not_send: PhantomData<*const ()>,
+}
+
+impl I2cSlave {
+    /// Configure eUSCI_B0 as an I2C slave at `config.address`.
+    ///
+    /// SLAU367P init sequence, same shape as the master's: hold in reset,
+    /// program mode + own address, mux the pins, release. No bit-rate or
+    /// clock source is programmed — SCL is the master's, and the eUSCI slave
+    /// state machine runs from it. No bus-clear either: that recovery bangs
+    /// SCL as an output, which is a master-side liberty a slave must never
+    /// take.
+    fn init(config: SlaveConfig) -> Result<Self, AddressError> {
+        let oa0 = encode_own_address(config.address, config.general_call)?;
+
+        // Synchronous (UCSYNC) I2C (UCMODE=11), UCMST=0 → slave.
+        let ctlw0 = UCSWRST | UCSYNC | UCMODE_I2C;
+
+        unsafe {
+            // 1. Hold in reset while programming.
+            write_reg(BASE + CTLW0, ctlw0);
+            // 2. No clock-low timeout (see the type-level docs) and none of
+            //    CTLW1's master conveniences (auto-STOP etc.).
+            write_reg(BASE + CTLW1, 0);
+            // 3. Own address 0, enabled (+ general call if asked). OA1..3 and
+            //    ADDMASK stay at reset: one address, exact match.
+            write_reg(BASE + I2COA0, oa0);
+            // 4. Mux SDA/SCL to the eUSCI_B0 function (SEL1:SEL0 = 10).
+            set_bits_u8(P1SEL1, P1_I2C_PINS);
+            clear_bits_u8(P1SEL0, P1_I2C_PINS);
+            // 5. Release for operation. From here the hardware ACKs the own
+            //    address on its own; poll() picks up the resulting events.
+            write_reg(BASE + CTLW0, ctlw0 & !UCSWRST);
+        }
+
+        Ok(I2cSlave {
+            transmitting: false,
+            _not_send: PhantomData,
+        })
+    }
+
+    /// Non-blocking event pump: translate pending eUSCI flags into at most one
+    /// [`SlaveEvent`]. Call it from the main loop (or after a `USCI_B0`
+    /// interrupt wake) until it returns `None`.
+    ///
+    /// Priority order is load-bearing:
+    ///
+    /// 1. **`Received`** before everything — a repeated START can land while
+    ///    the final write-phase byte still sits in RXBUF, and the byte must
+    ///    reach the application before the direction turnaround. (Draining
+    ///    RXBUF is also what releases the hardware's SCL stretch.)
+    /// 2. **`Stop` before `Start`** — after a STOP-then-new-START missed
+    ///    window, both flags are pending and transaction order must be
+    ///    preserved. A repeated START sets only `UCSTTIFG`, so it is not
+    ///    reordered by this.
+    /// 3. **`TxRequest` last, gated** — only inside a master-read transaction
+    ///    (see the `transmitting` field), and only once `Stop`/`Start` have
+    ///    been dealt with, so a request belonging to a finished transaction
+    ///    is never surfaced.
+    pub fn poll(&mut self) -> Option<SlaveEvent> {
+        let ifg = unsafe { read_reg(BASE + IFG) };
+
+        if ifg & UCRXIFG != 0 {
+            // RXBUF read clears UCRXIFG0 in silicon and releases the stretch.
+            return Some(SlaveEvent::Received(unsafe { read_reg(BASE + RXBUF) } as u8));
+        }
+
+        if ifg & UCSTPIFG != 0 {
+            unsafe { clear_bits_u16(BASE + IFG, UCSTPIFG) };
+            let was_transmitting = self.transmitting;
+            self.transmitting = false;
+            if was_transmitting {
+                self.flush_stale_tx_byte();
+            }
+            return Some(SlaveEvent::Stop);
+        }
+
+        if ifg & UCSTTIFG != 0 {
+            unsafe { clear_bits_u16(BASE + IFG, UCSTTIFG) };
+            // UCTR mirrors the R/W bit of the address byte just ACKed.
+            let read = unsafe { read_reg(BASE + CTLW0) } & UCTR != 0;
+            self.transmitting = read;
+            return Some(SlaveEvent::Start { read });
+        }
+
+        if self.transmitting && ifg & UCTXIFG != 0 {
+            // Deliberately NOT cleared here: UCTXIFG0 clears when TXBUF is
+            // written (write_byte), so an unanswered request re-reports.
+            return Some(SlaveEvent::TxRequest);
+        }
+
+        None
+    }
+
+    /// Block until the next event. A slave has no self-imposed timeout — the
+    /// master owns all pacing, and "nothing is happening on the bus" is a
+    /// normal state of indefinite length. Use [`poll`](Self::poll) directly
+    /// in loops that have other work to do.
+    pub fn wait_event(&mut self) -> SlaveEvent {
+        loop {
+            if let Some(e) = self.poll() {
+                return e;
+            }
+        }
+    }
+
+    /// Supply the byte a [`SlaveEvent::TxRequest`] asked for. Writing TXBUF
+    /// clears `UCTXIFG0` and releases the SCL stretch; the hardware shifts
+    /// the byte out and raises the next `TxRequest` (or the master NACKs and
+    /// STOPs).
+    pub fn write_byte(&mut self, byte: u8) {
+        unsafe { write_reg(BASE + TXBUF, byte as u16) };
+    }
+
+    /// NACK the next received byte (`UCTXNACK`, self-clearing) — receive-side
+    /// flow control, e.g. "command buffer full". The byte that gets NACKed is
+    /// still received into RXBUF and surfaces as a normal
+    /// [`SlaveEvent::Received`].
+    pub fn nack_next_byte(&mut self) {
+        unsafe { set_bits_u16(BASE + CTLW0, UCTXNACK) };
+    }
+
+    /// Whether the in-progress transaction addressed this slave via the
+    /// general call (`0x00`) rather than its own address. Only meaningful
+    /// between `Start` and `Stop`, and only if the config enabled
+    /// [`SlaveConfig::general_call`]; the flag (`UCGC`) is cleared by the
+    /// hardware at the next START.
+    pub fn addressed_as_general_call(&self) -> bool {
+        let statw = unsafe { read_reg(BASE + STATW) };
+        statw & UCGC != 0
+    }
+
+    /// Whether the bus is mid-transaction (`UCBBUSY`: between a START and the
+    /// next STOP, whoever is being addressed).
+    pub fn bus_busy(&self) -> bool {
+        let statw = unsafe { read_reg(BASE + STATW) };
+        statw & UCBBUSY != 0
+    }
+
+    /// Discard a speculative TX byte parked in TXBUF at end of transaction.
+    ///
+    /// The eUSCI requests transmit bytes one ahead: when the master NACKs
+    /// what turns out to be the final byte, the application may already have
+    /// answered the next `TxRequest`, leaving a byte in TXBUF that was never
+    /// clocked out. Left there, it would be transmitted as the *first* byte
+    /// of the next master-read — off-by-one forever after. There is no TXBUF
+    /// flush bit, so the driver toggles `UCSWRST` (which resets the state
+    /// machine and flag logic but preserves CTLW0/OA0 configuration),
+    /// preserving IE around it since SLAU367P is not explicit about whether
+    /// the reset clears interrupt enables.
+    ///
+    /// Called from `poll` at `Stop` after a transmit transaction, when the
+    /// bus is idle for this slave — the one safe moment: mid-transaction a
+    /// reset would drop the session on the floor.
+    fn flush_stale_tx_byte(&mut self) {
+        let ifg = unsafe { read_reg(BASE + IFG) };
+        if ifg & UCTXIFG != 0 {
+            return; // TXBUF empty — the master consumed everything we loaded.
+        }
+        unsafe {
+            let ie = read_reg(BASE + IE);
+            set_bits_u16(BASE + CTLW0, UCSWRST);
+            clear_bits_u16(BASE + CTLW0, UCSWRST);
+            write_reg(BASE + IE, ie);
+        }
+    }
+
+    /// Release eUSCI_B0: hold it in reset and hand the PAC peripheral back
+    /// (e.g. to rebuild it as a master or as SPI).
+    pub fn free(self) -> pac::UsciB0I2cMode {
+        unsafe {
+            set_bits_u16(BASE + CTLW0, UCSWRST);
+            write_reg(BASE + IE, 0);
+            write_reg(BASE + I2COA0, 0);
+            pac::Peripherals::steal().usci_b0_i2c_mode
+        }
+    }
+}
+
+/// Which slave events fire the `USCI_B0` interrupt vector. All default off;
+/// enable only what the ISR consumes.
+#[cfg(feature = "critical-section")]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct SlaveInterrupts {
+    /// START + own address received (`UCSTTIE`).
+    pub start: bool,
+    /// STOP received (`UCSTPIE`).
+    pub stop: bool,
+    /// Data byte in RXBUF (`UCRXIE0`).
+    pub rx: bool,
+    /// TXBUF empty while addressed for read (`UCTXIE0`).
+    pub tx: bool,
+}
+
+#[cfg(feature = "critical-section")]
+impl I2cSlave {
+    /// Arm the selected sources on the `USCI_B0` vector. ISR side: demux with
+    /// [`read_iv`] (whose read clears the served flag), drain data with
+    /// [`isr_read_byte`]/[`isr_write_byte`], and remember the house rule —
+    /// a one-shot wake handler must disarm *inside the ISR* via
+    /// [`isr_disable_interrupts`], because RX/TX requests re-latch per byte.
+    ///
+    /// The IE register is RMW'd under `critical_section::with` (the ISR-side
+    /// disarm writes it too).
+    pub fn enable_interrupts(&mut self, which: SlaveInterrupts) {
+        let mut mask = 0u16;
+        if which.start {
+            mask |= UCSTTIFG;
+        }
+        if which.stop {
+            mask |= UCSTPIFG;
+        }
+        if which.rx {
+            mask |= UCRXIFG;
+        }
+        if which.tx {
+            mask |= UCTXIFG;
+        }
+        critical_section::with(|_| unsafe {
+            set_bits_u16(BASE + IE, mask);
+        });
+    }
+
+    /// Disarm every `USCI_B0` slave interrupt source (thread-mode
+    /// counterpart of [`isr_disable_interrupts`]).
+    pub fn disable_interrupts(&mut self) {
+        critical_section::with(|_| unsafe {
+            write_reg(BASE + IE, 0);
+        });
+    }
+}
+
+/// Read `UCB0IV` — the `USCI_B0` vector's demux register. The read atomically
+/// clears the served (highest-priority pending) flag in silicon, so consume
+/// the returned value fully; decode it with [`decode_iv`]. Free function for
+/// ISR use, per the driver-owns-the-peripheral convention.
+///
+/// Caveat inherited from the IV mechanism: a `UCTXIFG0` slot consumed here is
+/// gone even if no byte is subsequently written — the request re-latches only
+/// while the master keeps clocking.
+pub fn read_iv() -> u16 {
+    unsafe { read_reg(BASE + IV) }
+}
+
+/// ISR-side RXBUF drain (clears `UCRXIFG0`, releases the SCL stretch).
+pub fn isr_read_byte() -> u8 {
+    unsafe { read_reg(BASE + RXBUF) as u8 }
+}
+
+/// ISR-side TXBUF load (clears `UCTXIFG0`, releases the SCL stretch).
+pub fn isr_write_byte(byte: u8) {
+    unsafe { write_reg(BASE + TXBUF, byte as u16) };
+}
+
+/// Disarm every `USCI_B0` interrupt source from inside the ISR. MSP430 ISRs
+/// run with GIE cleared, so the plain RMW is already atomic there — do not
+/// call from thread mode (use [`I2cSlave::disable_interrupts`]).
+pub fn isr_disable_interrupts() {
+    unsafe { write_reg(BASE + IE, 0) };
+}
+
+/// Extension trait to turn the PAC eUSCI_B0 I2C peripheral into an
+/// [`I2cSlave`].
+pub trait I2cSlaveExt {
+    /// Consume the PAC peripheral and configure it as an I2C slave. Fails
+    /// only on an invalid own address (out of 7-bit range, or one of the
+    /// bus-spec reserved addresses).
+    fn into_i2c_slave(self, config: SlaveConfig) -> Result<I2cSlave, AddressError>;
+}
+
+impl I2cSlaveExt for pac::UsciB0I2cMode {
+    fn into_i2c_slave(self, config: SlaveConfig) -> Result<I2cSlave, AddressError> {
+        // Consuming the PAC singleton proves exclusive ownership of eUSCI_B0
+        // (and makes master-vs-slave-vs-SPI on this block exclusive by move).
+        I2cSlave::init(config)
     }
 }
 

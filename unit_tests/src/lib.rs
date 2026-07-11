@@ -21,6 +21,7 @@ mod capture_math;
 mod comp_ladder;
 mod crc_soft;
 mod fram_addr;
+mod i2c_slave;
 mod mpu_seg;
 mod rtc_alarm;
 mod rtc_tick;

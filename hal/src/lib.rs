@@ -21,6 +21,7 @@ pub mod fram;
 mod fram_addr;
 pub mod gpio;
 pub mod i2c;
+mod i2c_slave;
 pub mod mpu;
 mod mpu_seg;
 pub mod power;
