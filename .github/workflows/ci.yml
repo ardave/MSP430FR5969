@@ -4,29 +4,27 @@ name: CI
 #
 # WHAT THIS WORKFLOW DOES
 #   - firmware job  : compiles the workspace for the `msp430-none-elf` target.
-#                     The PAC (`msp430fr5969`) and `hal` library crates are fully built (rlibs,
-#                     real codegen); the whole workspace -- including the
-#                     `pac_consumer` / `hal_consumer` binaries -- is type-checked
-#                     with `cargo check`.
-#   - unit-tests job: runs the host-side unit tests in `unit_tests/` (baud,
-#                     ticks, FRAM addressing, ADC calibration).
+#                     The PAC (`msp430fr5969`) and `hal` library crates are fully
+#                     built (rlibs, real codegen); the whole workspace --
+#                     including the consumer binaries -- and the hal examples are
+#                     type-checked with `cargo check`.
+#   - link job      : downloads TI's MSP430-GCC for Linux (sha256-pinned,
+#                     cached) and LINKS the entire workspace plus the hal
+#                     examples into real ELFs. This is what catches link-only
+#                     failures: FRAM overflow (48 KB), missing runtime symbols,
+#                     multilib/ISA mismatches.
+#   - package job   : `cargo package`s both publishable crates (pac, hal) so a
+#                     file missing from a published crate (memory.x, device.x,
+#                     build.rs) fails the PR instead of release day.
+#   - unit-tests job: runs the host-side unit tests in `unit_tests/` (the HAL's
+#                     pure math -- baud, ticks, FRAM addressing, ADC calibration,
+#                     CRC model, and friends).
 #
-# WHAT IT DOES NOT DO (where it leaves off)
-#   - It does NOT link the consumer binaries into flashable ELFs. The final link
-#     needs TI's proprietary MSP430 GCC toolchain (linker + libgcc + the F5
-#     hardware-multiply library `libmul_f5`, see `.cargo/config.toml`), which is
-#     not available on GitHub-hosted runners -- and the linker path in
-#     `.cargo/config.toml` is a local absolute path. `cargo check` still compiles
-#     every line and catches all source-level errors; only the link step is
-#     skipped. Link-only failures (e.g. FRAM overflow, missing runtime symbols)
-#     are therefore NOT caught here -- they must be verified locally with the
-#     documented `cargo +nightly build`.
-#   - It does NOT flash or run anything on hardware (no device in CI).
+# WHAT IT DOES NOT DO
+#   - It does NOT flash or run anything on hardware (no device in CI); the
+#     hardware-in-the-loop suite in `hal_integration_tests/` stays a local,
+#     board-attached workflow.
 #   - It does NOT run lint/format checks (rustfmt/clippy) -- compilation only.
-#
-# To add a real end-to-end link later: use a self-hosted runner that has the TI
-# toolchain, or vendor/cache the TI Linux toolchain and override the linker via
-# `CARGO_TARGET_MSP430_NONE_ELF_LINKER`.
 
 # Compile on every PR targeting main, and on every push (merge or direct
 # commit) to main.
@@ -46,18 +44,9 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Compile the firmware for the msp430-none-elf target.
-  #
-  # The two library crates (pac, hal) are fully code-generated here -- libraries
-  # produce rlibs, so this is a real compile with no link step.
-  #
-  # The consumer *binaries* are only `check`ed, not linked. Linking a flashable
-  # binary needs TI's proprietary MSP430 GCC toolchain (the linker plus libgcc
-  # and the F5 hardware-multiply library `libmul_f5`; see `.cargo/config.toml`),
-  # which is not available on GitHub-hosted runners and whose linker path in
-  # `.cargo/config.toml` is a local absolute path. `cargo check` still compiles
-  # every line of the binaries and catches all source-level errors -- only the
-  # final link is skipped.
+  # Compile the firmware for the msp430-none-elf target (no TI toolchain: the
+  # library crates fully build as rlibs, the binaries and examples are
+  # `cargo check`ed). Fast feedback; the `link` job below does the real link.
   # ---------------------------------------------------------------------------
   firmware:
     name: Firmware (msp430-none-elf)
@@ -85,10 +74,103 @@ jobs:
       - name: Check entire workspace (incl. consumer binaries)
         run: cargo check --workspace
 
+      # The getting-started examples are complete firmwares and carry
+      # `required-features = ["rt", "critical-section"]`.
+      - name: Check hal examples
+        run: cargo check -p msp430fr5969-hal --examples --features rt,critical-section
+
   # ---------------------------------------------------------------------------
-  # Host-side unit tests for the HAL's pure math (baud, ticks, FRAM addressing,
-  # ADC calibration -- one module per subject, each `include!`ing the real
-  # shipping source from `hal/src/`).
+  # Link every binary in the workspace (and the hal examples) into flashable
+  # ELFs with TI's MSP430-GCC. This is the only job that catches link-only
+  # failures -- most importantly the FRAM budget: the part has 48 KB, and a
+  # change that drags in `core::fmt` (~30 KB) only fails at link time.
+  #
+  # The toolchain is TI's free MSP430-GCC-OPENSOURCE Linux tarball,
+  # sha256-pinned and cached between runs (~64 MB download on a cache miss).
+  # `.cargo/config.toml` points the linker at tools/msp430-linker.sh, which
+  # honors $MSP430_GCC -- set below. The toolchain-only tarball is enough:
+  # gcc 9.3 resolves `-mmcu=msp430fr5969` from built-in device data (verified
+  # against the macOS install, which has no devices.csv either) and the link
+  # uses msp430-rt's link.x, not TI's device linker scripts.
+  # ---------------------------------------------------------------------------
+  link:
+    name: Link firmware ELFs (TI MSP430-GCC)
+    runs-on: ubuntu-latest
+    env:
+      TI_GCC_VERSION: 9.3.1.11
+      TI_GCC_URL: https://dr-download.ti.com/software-development/ide-configuration-compiler-or-debugger/MD-LlCjWuAbzH/9.3.1.2/msp430-gcc-9.3.1.11_linux64.tar.bz2
+      TI_GCC_SHA256: b60851b61565e3ddd2193298a3fac5120c2402597174106cc5f8482b9e9986e6
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly Rust + rust-src
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache TI MSP430-GCC
+        id: ti-gcc-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/ti-gcc
+          key: ti-msp430-gcc-${{ env.TI_GCC_VERSION }}-linux64
+
+      - name: Download TI MSP430-GCC
+        if: steps.ti-gcc-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -sSL --retry 3 -o /tmp/msp430-gcc.tar.bz2 "$TI_GCC_URL"
+          echo "$TI_GCC_SHA256  /tmp/msp430-gcc.tar.bz2" | sha256sum -c -
+          mkdir -p ~/ti-gcc
+          tar xjf /tmp/msp430-gcc.tar.bz2 -C ~/ti-gcc
+
+      - name: Point the linker wrapper at the toolchain
+        run: echo "MSP430_GCC=$HOME/ti-gcc/msp430-gcc-${TI_GCC_VERSION}_linux64/bin/msp430-elf-gcc" >> "$GITHUB_ENV"
+
+      - name: Link entire workspace
+        run: cargo build --workspace
+
+      - name: Link hal examples
+        run: cargo build -p msp430fr5969-hal --examples --features rt,critical-section
+
+  # ---------------------------------------------------------------------------
+  # Dry-run packaging of the two publishable crates. `--list` output is checked
+  # for the files the build machinery depends on at consumer sites: the PAC's
+  # build.rs copies memory.x/device.x to the linker search path, so a package
+  # missing them produces a crate that cannot link downstream.
+  # `--no-verify` skips the verify build (the `link` job already proves the
+  # sources compile; the verify build would need the TI linker for no gain).
+  # ---------------------------------------------------------------------------
+  package:
+    name: Package check (crates.io)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly Rust + rust-src
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Package msp430fr5969 (pac)
+        run: |
+          cargo package -p msp430fr5969 --no-verify --list | tee /tmp/pac-files
+          grep -qx 'memory.x' /tmp/pac-files
+          grep -qx 'device.x' /tmp/pac-files
+          grep -qx 'build.rs' /tmp/pac-files
+          cargo package -p msp430fr5969 --no-verify
+
+      - name: Package msp430fr5969-hal
+        run: |
+          cargo package -p msp430fr5969-hal --no-verify --list | tee /tmp/hal-files
+          grep -qx 'README.md' /tmp/hal-files
+          cargo package -p msp430fr5969-hal --no-verify
+
+  # ---------------------------------------------------------------------------
+  # Host-side unit tests for the HAL's pure math (one module per subject, each
+  # `include!`ing the real shipping source from `hal/src/`).
   #
   # `unit_tests/` is detached from the workspace and pins its host triple to
   # `aarch64-apple-darwin` (see unit_tests/.cargo/config.toml), so it runs on an

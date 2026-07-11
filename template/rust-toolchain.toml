@@ -1,0 +1,5 @@
+# Nightly is required for `-Z build-std=core` (msp430-none-elf is a tier-3
+# target with no prebuilt core), and rust-src is what build-std compiles from.
+[toolchain]
+channel = "nightly"
+components = ["rust-src"]

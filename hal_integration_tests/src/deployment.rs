@@ -11,11 +11,11 @@ use std::path::{Path, PathBuf};
 
 use xshell::{cmd, Shell};
 
-/// Absolute path to the eZ-FET emulator's flashing tool.
-const DSLITE: &str = "/Applications/ti/ccs2051/ccs/ccs_base/DebugServer/bin/DSLite";
-
-/// DSLite target-configuration file, relative to the repo root.
-const CCXML: &str = "MSP430FR5969.ccxml";
+/// Repo-root-relative path to the DSLite flashing wrapper. The script is the
+/// one place that knows where DSLite lives (`$MSP430_DSLITE`, PATH, or known
+/// CCS install locations) and where the ccxml target configuration is; cargo's
+/// `runner` (.cargo/config.toml) goes through the same script.
+const FLASH_SH: &str = "tools/flash.sh";
 
 /// Where `cargo +nightly build` places the (debug) MSP430 ELFs, relative to the
 /// repo root.
@@ -78,7 +78,7 @@ fn feature_note(features: &[&str]) -> String {
 pub fn flash(bin: &str) -> Result<(), Box<dyn Error>> {
     let root = repo_root();
     let elf = root.join(TARGET_DIR).join(bin);
-    let ccxml = root.join(CCXML);
+    let flash_sh = root.join(FLASH_SH);
 
     let deployed = deployed_size(&elf)?;
     println!(
@@ -86,7 +86,7 @@ pub fn flash(bin: &str) -> Result<(), Box<dyn Error>> {
         human_size(deployed)
     );
     let sh = Shell::new()?;
-    cmd!(sh, "{DSLITE} load -c {ccxml} -f {elf}").run()?;
+    cmd!(sh, "{flash_sh} {elf}").run()?;
     Ok(())
 }
 

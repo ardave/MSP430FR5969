@@ -1,0 +1,37 @@
+# Standalone starter project for the MSP430FR5969, using the published
+# msp430fr5969-hal crate. Copy this whole directory out of the repo (it is
+# self-contained — the empty [workspace] table detaches it from the parent
+# workspace) and rename the package.
+
+[package]
+name = "msp430fr5969-app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Detach from any enclosing cargo workspace.
+[workspace]
+
+[dependencies]
+# The HAL, from crates.io. `rt` brings in the msp430-rt runtime (reset handler,
+# vector table, #[entry]); `critical-section` lets interrupt-enable registers
+# be shared safely and is required for Peripherals::take().
+hal = { package = "msp430fr5969-hal", version = "0.1", features = ["rt", "critical-section"] }
+# Provides the critical-section single-core implementation (DINT/EINT). The
+# `use msp430 as _;` in main.rs force-links it so the symbols resolve.
+msp430 = { version = "0.4.1", features = ["critical-section-single-core"] }
+# The #[entry] attribute (and #[interrupt], when you add ISRs).
+msp430-rt = "0.4.1"
+
+# The MSP430FR5969 has only 48 KB of FRAM. An unoptimized debug build of any
+# binary that does arithmetic pulls in debug overflow-check panics, which drag
+# in the ~30 KB `core::fmt` formatting engine — enough to overflow FRAM.
+# Optimize debug builds for size and drop overflow checks / unwinding so plain
+# `cargo build` produces flashable firmware.
+[profile.dev]
+opt-level = "s"
+overflow-checks = false
+panic = "abort"
+
+[profile.release]
+panic = "abort"

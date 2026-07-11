@@ -5,7 +5,10 @@ target = "msp430-none-elf"
 build-std = ["core"]
 
 [target.msp430-none-elf]
-linker = "/Users/davidfalkner/ti/msp430-gcc-9.3.1.11_macos/bin/msp430-elf-gcc"
+# Discovery wrapper: $MSP430_GCC, then PATH, then known TI install locations
+# (~/ti, /Applications/ti, /opt/ti). Keeps machine-specific toolchain paths out
+# of the repo; the CARGO_TARGET_MSP430_NONE_ELF_LINKER env var still overrides.
+linker = "tools/msp430-linker.sh"
 rustflags = [
     "-C", "link-arg=-mmcu=msp430fr5969",
     "-C", "link-arg=-nostartfiles",
@@ -38,4 +41,6 @@ rustflags = [
     "-C", "link-arg=-lmul_f5",
     "-C", "link-arg=-Wl,--end-group",
 ]
-runner = "/Applications/ti/ccs2051/ccs/ccs_base/DebugServer/bin/DSLite load -c MSP430FR5969.ccxml -f"
+# Flash via DSLite ($MSP430_DSLITE / PATH / known CCS install locations; the
+# ccxml is resolved relative to the script, so this works from any directory).
+runner = "tools/flash.sh"
