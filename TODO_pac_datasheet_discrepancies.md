@@ -39,23 +39,29 @@ no state, CCIFG never latches, TA0IV reads 0, and nothing aliases onto the
 real channels
 (`ta0 ch3 rbccr=0 rbctl=0 cap=0 brk=0 iv=00 | ch4 rbccr=0 rbctl=0 cap=0 brk=0 iv=00 | alias=1`).
 
-### [ ] 2. MPU (Memory Protection Unit) defined in SVD but missing from PAC
+### [x] 2. ~~MPU defined in SVD but missing from PAC~~ — RESOLVED: regenerated 2026-07-11; svd2rust never dropped anything
 
-The MPU peripheral at base address 0x05A0 exists in the SVD file but
-svd2rust silently dropped it during code generation. No `mpu` module, no
-type alias, and no field in the `Peripherals` struct was generated.
+**svd2rust was innocent.** Reproducing the generation (installed svd2rust
+0.37.1 — the exact version the old PAC's doc header named — against the
+checked-in SVD, `--target msp430`) emitted the MPU block correctly, with the
+only peripheral-level diff vs the old checked-in PAC being exactly `Mpu`.
+Since the SVD has carried the MPU since the initial commit, the old PAC must
+have been generated from a *different, earlier SVD file* than the one
+checked in — a generation-input mismatch, not a generator bug.
 
-This means you have no typed access to memory protection features (segment
-boundaries, access permissions, IP encapsulation).
-
-- **Datasheet ref:** `reference/02_memory_map.md` lines 316, 644-654
-- **SVD location:** `msp430fr5969.svd` line 13790
-- **Registers:** MPUCTL0, MPUCTL1, MPUSEGB1, MPUSEGB2, MPUSAM, MPUIPC0,
-  MPUIPSEGB1, MPUIPSEGB2
-- **To investigate:** Figure out why svd2rust skipped this peripheral.
-  Possibly a malformed `<baseAddress>` or missing required field in the SVD.
-  Compare the MPU `<peripheral>` block structure against a working one like
-  PMM to spot the difference.
+The PAC has been regenerated (v0.2.0): `mpu` module at 0x05A0 with all eight
+registers, `Peripherals.mpu`, plus two incidental fixes the msp430 target
+flavor emits at source (the vector-table `Vector._reserved` as `u16` and
+`extern "msp430-interrupt"` handler declarations — retiring the old
+hand-patches; one small rt-gating patch remains, see CLAUDE.md "PAC
+generation"). `hal::mpu` now owns `pac::Mpu` (consume-by-move,
+`Mpu::new(p.mpu)`) with typed reads and typed writes to the plain 16-bit
+registers. **`MPUCTL0` deliberately stays raw byte lanes**: the SVD does not
+model the `MPUPW` password byte (reads `0x96`, word writes must carry
+`0xA5`), so a PAC `modify()` on it would echo `0x96` as the key and PUC —
+never touch `MPUCTL0` through the PAC field API. All 8 `mpu` HiL suite
+verdicts (SYSNMI demux, violation PUC, lock-until-BOR) re-verified on
+hardware 2026-07-11 through the typed driver.
 
 ---
 

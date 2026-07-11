@@ -208,7 +208,7 @@ fn main() -> ! {
     let mut red_led = port4.pin6.into_output();
 
     let mut delay = Delay::new(clocks.mclk());
-    let mut mpu = Mpu::new();
+    let mut mpu = Mpu::new(p.mpu);
     let mut high = HighFram::new();
 
     tx.write_all(b"\r\nMSP430FR5969 FRAM MPU fixture (no wiring)\r\n").ok();

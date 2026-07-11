@@ -25,7 +25,7 @@ critical-section = ["pac/critical-section", "dep:critical-section"]
 [dependencies]
 # `path` is used by the workspace and stripped on publish; `version` is what
 # the published crate resolves against on crates.io.
-pac = { path = "../pac", package = "msp430fr5969", version = "0.1.0" }
+pac = { path = "../pac", package = "msp430fr5969", version = "0.2.0" }
 # Interrupt-enable/flag registers are shared (PxIE, UCAxIE, SFRIE1), so the
 # HAL's enable/disable paths RMW them inside critical_section::with. Optional:
 # only pulled in with the `critical-section` feature, alongside the PAC's
