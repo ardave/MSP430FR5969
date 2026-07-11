@@ -25,13 +25,19 @@ Table 6-13 signal connections define CCR0-CCR2 only. TI's `msp430fr5969.h`
 register table was most plausibly copy-pasted from a sibling part with a
 five-channel TA0.
 
-Settled on silicon by `--bin ta0_probe_test_runner` (host suite `ta0_probe`,
-in the default set): raw-pointer probes at the putative addresses
-(0x0348/0x034A, 0x0358/0x035A) with channel 2 as positive control. Result:
-registers hold no state, a software-CCIS capture never fires CCIFG, TA0IV
-never presents 0x06/0x08, and nothing aliases onto CCR0-CCR2. The suite
-stays in the default set with the ABSENT findings pinned, so a different
-die revision (or a probe regression) fails loudly.
+Settled on silicon 2026-07-11 by a one-off probe fixture (committed and then
+removed once the question was answered — see commit 8f1bc5f on the
+`ta0_ccr3_probe` branch for the code and method): raw volatile-pointer probes
+at the putative addresses (CCTL3/4 at 0x0348/0x034A, CCR3/4 at
+0x0358/0x035A), three independent checks per channel that had to agree —
+register write/read-back, a functional software-CCIS capture with the stamp
+bracketed by TA0R reads, and the TA0IV demux (0x06/0x08 slots) with only the
+probed channel's CCIE armed — with channel 2 run through the identical code
+as the positive control (readback stuck, capture fired bracketed, IV = 0x04)
+and an alias check on CCR0-CCR2. Observed for both channels: registers hold
+no state, CCIFG never latches, TA0IV reads 0, and nothing aliases onto the
+real channels
+(`ta0 ch3 rbccr=0 rbctl=0 cap=0 brk=0 iv=00 | ch4 rbccr=0 rbctl=0 cap=0 brk=0 iv=00 | alias=1`).
 
 ### [ ] 2. MPU (Memory Protection Unit) defined in SVD but missing from PAC
 
