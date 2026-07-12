@@ -204,11 +204,14 @@ pub fn pwm_cross(rig: &mut Rig) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Cross-board analog: the generator's PWM through the wiring's RC becomes a
-/// DC level; the measurer's ADC reads it in millivolts. Expected value =
-/// duty × the generator's own ADC-measured rail, so the assertion closes a
-/// loop through BOTH chips' calibrated analog chains. Two duty points catch
-/// gain and offset errors independently.
+/// Cross-board analog — NAME-ONLY, and a future addition: it requires the
+/// optional ~10 µF caps from each receiving board's A7 pin to GND (the base
+/// rig omits them; without the RC the ADC samples a raw square wave and this
+/// suite fails meaninglessly). Once fitted: the generator's PWM through the
+/// wiring's RC becomes a DC level; the measurer's ADC reads it in
+/// millivolts. Expected value = duty × the generator's own ADC-measured
+/// rail, so the assertion closes a loop through BOTH chips' calibrated
+/// analog chains. Two duty points catch gain and offset errors independently.
 pub fn adc_dac(rig: &mut Rig) -> Result<(), Box<dyn Error>> {
     println!("== adc_dac ==");
     for flip in [false, true] {

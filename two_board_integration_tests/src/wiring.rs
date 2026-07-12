@@ -19,8 +19,9 @@ pub fn print_banner() {
   stored in each board's Info FRAM by `provision`, so it survives replugging
   and reflashing). Wire once; never change.
 
-  Parts: 8x 2.2 kOhm, 2x 1.0 kOhm, 2x 10 kOhm resistors, 2x 10 uF ceramic
-  capacitors, jumper wires, and a small breadboard between the boards.
+  Parts: 9x 2.2 kOhm, 2x 1.0 kOhm, 2x 10 kOhm resistors, jumper wires, and a
+  small breadboard between the boards. (No capacitors required -- see the
+  future-addition note under W10/W11.)
   EVERY signal wire passes through its series resistor on the breadboard.
 
   W#   PARENT pin              series        CHILD pin               tests
@@ -36,14 +37,17 @@ pub fn print_banner() {
   W7   P3.5 in    J1.9   <--   2.2 kOhm      P3.4 out   J1.8         GPIO edge irq + LPM4 wake
   W8   P1.4 TB0.1 J2.12  -->   2.2 kOhm      P1.2 CCI1A J2.19        PWM -> timer capture
   W9   P1.2 CCI1A J2.19  <--   2.2 kOhm      P1.4 TB0.1 J2.12        PWM -> timer capture
-  W10  P1.5 TB0.2 J2.13  -->   2.2 kOhm      P2.4 A7    J1.6   [C]   PWM-RC DAC -> ADC
-  W11  P2.4 A7    J1.6   <--   2.2 kOhm      P1.5 TB0.2 J2.13  [C]   PWM-RC DAC -> ADC
+  W10  P1.5 TB0.2 J2.13  -->   2.2 kOhm      P2.4 A7    J1.6         (reserved: future PWM-RC
+  W11  P2.4 A7    J1.6   <--   2.2 kOhm      P1.5 TB0.2 J2.13         DAC -> ADC, see note)
   W12  P2.2 CLK   J1.7         2.2 kOhm      P2.2 CLK   J1.7         (reserved: future B0 SPI
                                                                       master<->slave over W2/W3)
 
-  [C]: 10 uF ceramic from the RECEIVING board's A7 pin (J1.6) to that board's
-       GND -- i.e. one cap on the child side of W10, one on the parent side of
-       W11. With the 2.2 kOhm series R this is the RC that turns PWM into DC.
+  W10/W11 future addition: adding a ~10 uF cap (4.7-47 uF, any type, >=6.3 V,
+  + toward the pin) from each RECEIVING board's A7 pin (J1.6) to that board's
+  GND turns the peer's PWM into a DC level (RC with the 2.2 kOhm series R)
+  and enables the name-only `adc_dac` suite -- a cross-board absolute-analog
+  check through both chips' calibrated ADC/REF chains. Wire W10/W11 now
+  regardless: the caps are a ten-second retrofit at the pin, no rewiring.
 
   Direction key: "-->" = left side drives, right side listens; wires come in
   crossed pairs so each pin has ONE fixed direction on BOTH boards -- no

@@ -62,14 +62,20 @@ doubles as build instructions for the rig. Summary:
 | W7 | P3.5 (J1.9) | ← | P3.4 (J1.8) | 2.2 kΩ | GPIO edge interrupts, LPM4 wake |
 | W8 | P1.4 TB0.1 (J2.12) | → | P1.2 TA1.CCI1A (J2.19) | 2.2 kΩ | PWM → timer capture |
 | W9 | P1.2 (J2.19) | ← | P1.4 (J2.12) | 2.2 kΩ | PWM → timer capture |
-| W10 | P1.5 TB0.2 (J2.13) | → | P2.4 A7 (J1.6) | 2.2 kΩ + 10 µF at child | PWM-RC DAC → ADC |
-| W11 | P2.4 A7 (J1.6) | ← | P1.5 (J2.13) | 2.2 kΩ + 10 µF at parent | PWM-RC DAC → ADC |
+| W10 | P1.5 TB0.2 (J2.13) | → | P2.4 A7 (J1.6) | 2.2 kΩ | *Reserved*: future PWM-RC DAC → ADC (see below) |
+| W11 | P2.4 A7 (J1.6) | ← | P1.5 (J2.13) | 2.2 kΩ | *Reserved*: future PWM-RC DAC → ADC (see below) |
 | W12 | P2.2 (J1.7) | ↔ | P2.2 (J1.7) | 2.2 kΩ | *Reserved*: future eUSCI_B0 SPI CLK (master↔slave SPI would reuse W2/W3 as SIMO/SOMI; needs an SPI-slave driver in the HAL first) |
 
 Header positions are BoosterPack-standard numbering per SLAU535B Fig. 15
-(Rev 2.0 boards; the schematic calls the connectors J4/J5). The 10 µF caps
-sit on the *receiving* board's A7 pin to GND, forming the RC that turns the
-peer's PWM into a DC level.
+(Rev 2.0 boards; the schematic calls the connectors J4/J5).
+
+**No capacitors are required.** W10/W11 are wired now so the rig never needs
+rewiring, but their suite (`adc_dac`) is a **future addition**: it needs a
+~10 µF cap (4.7–47 µF, any type, ≥6.3 V, + toward the pin) from each
+*receiving* board's A7 pin (J1.6) to that board's GND — with the 2.2 kΩ
+series R, the RC that turns the peer's PWM into a DC level. Fitting the caps
+is a ten-second breadboard retrofit at the pin; until then `adc_dac` simply
+never runs by default.
 
 ### Why this cannot damage anything
 
@@ -140,13 +146,14 @@ cables move.)
 | `gpio_edge` | Ten genuine wire edges (not software-set `PxIFG`) counted through the PORT3 ISR and `PxIV` demux, each direction, zero stray IV slots. |
 | `lpm4_wake` | One board parks in LPM4 (every clock stopped); the *other board* wakes it with a single edge — a truly external wake, hands-free. Exactly one edge tallied. |
 | `pwm_cross` | 1 kHz Timer_B0 PWM measured by the peer's Timer_A1 capture: frequency gate ±5 % (the two DCOs measured against each other), 25 %/75 % duty points (asymmetric, so inversion/transposition fails), both directions. |
-| `adc_dac` | The generator's PWM through the rig's RC becomes DC; the measurer reports it in millivolts. Expected = duty × the generator's own ADC-measured rail — one assertion through **both** chips' calibrated analog chains, at two duty points, both directions. |
+| `adc_dac` *(name-only; future addition — needs the W10/W11 caps)* | The generator's PWM through the rig's RC becomes DC; the measurer reports it in millivolts. Expected = duty × the generator's own ADC-measured rail — one assertion through **both** chips' calibrated analog chains, at two duty points, both directions. Run with `cargo +nightly run -- adc_dac` once the caps are fitted. |
 
-All suites are hands-free once the rig is built. **Status: code-complete,
-compiles for both targets; on-hardware verification pending** (the rig's
-first physical build). Timing constants that may need on-silicon tuning:
-the ±5 % cross-DCO frequency gate, the ADC tolerance (±5 % + 30 mV), and
-the LPM4 500 ms settle.
+All suites are hands-free once the rig is built; all but `adc_dac` run by
+default (`adc_dac` is name-only until its caps exist). **Status:
+code-complete, compiles for both targets; on-hardware verification pending**
+(the rig's first physical build). Timing constants that may need on-silicon
+tuning: the ±5 % cross-DCO frequency gate, the ADC tolerance (±5 % + 30 mV),
+and the LPM4 500 ms settle.
 
 ## Firmware command protocol
 
@@ -166,6 +173,10 @@ command/response table (`i`, `P`/`C`, `s`/`m`, `e`/`t`, `g`/`p`/`1`/`w`,
 
 ## Future work on the same wiring
 
+- **Fit the W10/W11 caps and promote `adc_dac`** into the default set: two
+  ~10 µF caps (salvage-grade is fine) are the entire bill of materials for a
+  cross-board absolute-analog test through both chips' calibrated ADC/REF
+  chains — a nice addition when capacitors are on hand.
 - **Cross-board SPI** over W2/W3/W12 (eUSCI_B0 SIMO/SOMI/CLK, straight-through
   is exactly what master↔slave SPI wants) once the HAL grows an SPI-slave
   driver.

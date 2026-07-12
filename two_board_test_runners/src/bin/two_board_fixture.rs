@@ -39,7 +39,7 @@
 //! | `1` | one pulse out of P3.4 | `2B_PULSED n=1` |
 //! | `w` | arm P3.5 rising edge, **enter LPM4** until the peer pulses | `2B_SLEEPING`, then `2B_WOKE edges=…` |
 //! | `f`/`F` | 1 kHz PWM on P1.4 (TB0.1) at 25 % / 75 % | `2B_PWM freq=… duty=…` |
-//! | `d`/`D` | 1 kHz PWM on P1.5 (TB0.2, the RC-DAC line) at 30 % / 60 % | `2B_DAC duty=…` |
+//! | `d`/`D` | 1 kHz PWM on P1.5 (TB0.2, the W10/W11 line) at 30 % / 60 % — the RC-DAC stimulus for the name-only `adc_dac` suite, meaningful once the optional 10 µF caps are fitted | `2B_DAC duty=…` |
 //! | `x` | park both PWM outputs low | `2B_PWM_OFF` |
 //! | `c` | measure P1.2 (TA1.CCI1A): frequency + duty | `2B_CAP freq=… duty=…` |
 //! | `a` | ADC: A7 (P2.4) millivolts + own AVCC millivolts | `2B_ADC a7_mv=… avcc_mv=…` |

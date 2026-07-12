@@ -18,8 +18,10 @@
 //!                                             # attached board (repeat per board)
 //! ```
 //!
-//! Suites: `identity`, `i2c_bridge`, `uart_link`, `gpio_edge`, `lpm4_wake`,
-//! `pwm_cross`, `adc_dac`.
+//! Default suites: `identity`, `i2c_bridge`, `uart_link`, `gpio_edge`,
+//! `lpm4_wake`, `pwm_cross`. Name-only (like the single-board runner's `spi`
+//! and `capture_jumper`): `adc_dac`, which needs the W10/W11 RC capacitors
+//! fitted first — see the wiring banner's future-addition note.
 
 use std::error::Error;
 use std::time::Duration;
@@ -34,15 +36,20 @@ use boards::Rig;
 
 type Suite = fn(&mut Rig) -> Result<(), Box<dyn Error>>;
 
-const SUITES: [(&str, Suite); 7] = [
+const SUITES: [(&str, Suite); 6] = [
     ("identity", suites::identity),
     ("i2c_bridge", suites::i2c_bridge),
     ("uart_link", suites::uart_link),
     ("gpio_edge", suites::gpio_edge),
     ("lpm4_wake", suites::lpm4_wake),
     ("pwm_cross", suites::pwm_cross),
-    ("adc_dac", suites::adc_dac),
 ];
+
+/// Suites that run ONLY when named explicitly: `adc_dac` requires the
+/// optional 10 µF caps on W10/W11 (a rig built to the base parts list has
+/// none, and without them the ADC sees a raw square wave — a guaranteed,
+/// meaningless FAIL).
+const NAMED_ONLY_SUITES: [(&str, Suite); 1] = [("adc_dac", suites::adc_dac)];
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -124,10 +131,13 @@ fn run_suites(only: &[String], no_flash: bool) -> Result<(), Box<dyn Error>> {
     let wanted =
         |name: &str| only.is_empty() || only.iter().any(|o| o == name);
     for name in only {
-        if !SUITES.iter().any(|(n, _)| n == name) {
+        if !SUITES.iter().any(|(n, _)| n == name)
+            && !NAMED_ONLY_SUITES.iter().any(|(n, _)| n == name)
+        {
             return Err(format!(
-                "unknown suite {name:?}; available: {:?}",
-                SUITES.map(|(n, _)| n)
+                "unknown suite {name:?}; available: {:?}, name-only: {:?}",
+                SUITES.map(|(n, _)| n),
+                NAMED_ONLY_SUITES.map(|(n, _)| n)
             )
             .into());
         }
@@ -158,6 +168,14 @@ fn run_suites(only: &[String], no_flash: bool) -> Result<(), Box<dyn Error>> {
     let mut ran = 0;
     for (name, run) in SUITES {
         if wanted(name) {
+            run(&mut rig).map_err(|e| format!("suite {name} failed: {e}"))?;
+            ran += 1;
+        }
+    }
+    // Name-only suites never run implicitly — `wanted` is true for
+    // everything when no suites were named, so gate on an explicit mention.
+    for (name, run) in NAMED_ONLY_SUITES {
+        if !only.is_empty() && wanted(name) {
             run(&mut rig).map_err(|e| format!("suite {name} failed: {e}"))?;
             ran += 1;
         }
