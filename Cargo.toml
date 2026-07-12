@@ -4,6 +4,7 @@ members = [
     "hal_test_runners",
     "pac",
     "pac_consumer",
+    "two_board_test_runners",
 ]
 resolver = "3"
 

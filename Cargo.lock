@@ -148,17 +148,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "msp430fr5969"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eed367f40b4f14742563679fd0aea253d1176eb99f7fe8bbfca4df376c9bbcb2"
-dependencies = [
- "critical-section",
- "msp430-rt",
- "vcell",
-]
-
-[[package]]
 name = "msp430fr5969-hal"
 version = "0.2.0"
 dependencies = [
@@ -169,7 +158,7 @@ dependencies = [
  "embedded-storage",
  "msp430",
  "msp430-rt",
- "msp430fr5969 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "msp430fr5969",
 ]
 
 [[package]]
@@ -184,7 +173,7 @@ version = "0.1.0"
 dependencies = [
  "msp430",
  "msp430-rt",
- "msp430fr5969 0.2.0",
+ "msp430fr5969",
 ]
 
 [[package]]
@@ -277,6 +266,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "two_board_test_runners"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "msp430",
+ "msp430-rt",
+ "msp430fr5969-hal",
 ]
 
 [[package]]
