@@ -7,6 +7,15 @@ members = [
 ]
 resolver = "3"
 
+# The HAL depends on the PAC by crates.io version (what its published form
+# resolves against), but workspace builds substitute the local pac/ here: PAC
+# edits reach the HAL immediately, the PAC compiles once instead of twice, and
+# `-p msp430fr5969` stays unambiguous (without this, the graph holds both the
+# path and registry copies at the same version). `cargo publish` ignores patch
+# tables, so the published HAL still pulls the real crates.io PAC.
+[patch.crates-io]
+msp430fr5969 = { path = "pac" }
+
 # The MSP430FR5969 has only 48 KB of FRAM. An unoptimized debug build of any
 # binary that does arithmetic pulls in debug overflow-check panics, which in
 # turn drag in the ~30 KB `core::fmt` formatting engine — enough to overflow
