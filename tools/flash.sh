@@ -1,12 +1,14 @@
 #!/bin/sh
 # Flash an MSP430 ELF to the attached LaunchPad via TI's DSLite debug server.
 #
-#   usage: tools/flash.sh <elf>
+#   usage: tools/flash.sh <elf> [ccxml]
 #
 # This is the one place that knows where DSLite lives: cargo's `runner`
 # (.cargo/config.toml) and the hal_integration_tests host runner both invoke
-# it. The target-configuration file (MSP430FR5969.ccxml) is resolved relative
-# to this script, so it works from any working directory.
+# it. The target-configuration file defaults to the repo's MSP430FR5969.ccxml,
+# resolved relative to this script so it works from any working directory; an
+# explicit ccxml may be passed as the second argument (the two-board runner
+# uses this to pin a specific eZ-FET probe when two boards are attached).
 #
 # DSLite resolution order:
 #   1. $MSP430_DSLITE       — explicit override (full path to DSLite)
@@ -19,14 +21,14 @@
 
 set -e
 
-if [ $# -ne 1 ]; then
-    echo "usage: $0 <elf>" >&2
+if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+    echo "usage: $0 <elf> [ccxml]" >&2
     exit 2
 fi
 ELF=$1
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-CCXML="$SCRIPT_DIR/../MSP430FR5969.ccxml"
+CCXML=${2:-"$SCRIPT_DIR/../MSP430FR5969.ccxml"}
 
 resolve_dslite() {
     if [ -n "$MSP430_DSLITE" ]; then
