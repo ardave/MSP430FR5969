@@ -1,6 +1,6 @@
 [package]
 name = "msp430fr5969-hal"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Hardware abstraction layer (embedded-hal) for the TI MSP430FR5969 microcontroller"
 repository = "https://github.com/ardave/MSP430FR5969"
@@ -23,9 +23,7 @@ rt = ["pac/rt"]
 critical-section = ["pac/critical-section", "dep:critical-section"]
 
 [dependencies]
-# `path` is used by the workspace and stripped on publish; `version` is what
-# the published crate resolves against on crates.io.
-pac = { path = "../pac", package = "msp430fr5969", version = "0.2.0" }
+pac = { package = "msp430fr5969", version = "0.2.0" }
 # Interrupt-enable/flag registers are shared (PxIE, UCAxIE, SFRIE1), so the
 # HAL's enable/disable paths RMW them inside critical_section::with. Optional:
 # only pulled in with the `critical-section` feature, alongside the PAC's
