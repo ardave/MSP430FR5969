@@ -1,0 +1,175 @@
+# Two-LaunchPad integration rig
+
+Two MSP-EXP430FR5969 LaunchPads, permanently wired together, testing each
+other. A single board — even with loopback jumpers — can only ever talk to
+itself: same clock, same silicon, and peripherals like the I2C **slave**
+simply have no counterpart to answer. Wiring two boards together gives every
+suite a genuinely independent partner: a second clock domain, a second
+calibrated analog chain, a real external interrupt source, and a live bus
+master for the slave driver's first-ever silicon verification.
+
+Two crates implement it, mirroring the single-board pattern
+(`hal_integration_tests` + `hal_test_runners`):
+
+- **`two_board_test_runners`** (workspace member) — ONE firmware fixture,
+  `two_board_fixture`, flashed identically to BOTH boards. It is a command
+  server on the eUSCI_A0 USB backchannel (9600 8N1): the host sends
+  single-byte commands, the board answers with framed report/verdict lines.
+- **`two_board_integration_tests`** (this crate, detached from the workspace
+  like the other host-side crates) — builds and flashes the fixture to both
+  boards, discovers which is which, and drives all the cross-board suites.
+
+## Board identity: parent and child
+
+The wiring is *almost* symmetric, but the I2C pull-ups hang off one board's
+3V3 and the suites need a stable way to say "the board wired as X". That
+identity must survive USB replugging (macOS device paths encode the physical
+USB port, not the board) **and** reflashing. So it lives in each board's
+**Info FRAM at offset 0xA0** (`'2' 'B' 'P'|'C' 0`) — Info FRAM isn't part of
+the flashed image, so DSLite never touches it, and the eZ-FET's USB
+enumeration is irrelevant: every run *asks* each board who it is (`i` →
+`2B_ID role=parent fw=1`) and pairs the serial ports from the answers.
+
+Provision once, one board at a time (that's how you and the tooling agree on
+which physical board gets which name):
+
+```sh
+cd two_board_integration_tests
+# only the board that will be PARENT attached:
+cargo +nightly run -- provision parent
+# swap cables: only the board that will be CHILD attached:
+cargo +nightly run -- provision child
+```
+
+Then label the boards with a marker. The parent is the board whose 3V3
+(J1.1) sources the two I2C pull-up resistors.
+
+## Wiring
+
+Run `cargo +nightly run -- wiring` for the authoritative table — the same
+banner is printed at the start of **every** run, so any captured test log
+doubles as build instructions for the rig. Summary:
+
+| # | Parent | | Child | Series | Purpose |
+|---|--------|-|-------|--------|---------|
+| W1 | GND (J2.20) | ↔ | GND (J2.20) | wire | Common ground — connect FIRST |
+| W2 | P1.6 SDA (J2.15) | ↔ | P1.6 SDA (J2.15) | 1.0 kΩ | I2C, eUSCI_B0 master↔slave |
+| W3 | P1.7 SCL (J2.14) | ↔ | P1.7 SCL (J2.14) | 1.0 kΩ | I2C, eUSCI_B0 master↔slave |
+| R1/R2 | 3V3 (J1.1) | | — | 10 kΩ ×2 | SDA/SCL pull-ups, parent side only |
+| W4 | P2.5 TXD (J1.4) | → | P2.6 RXD (J1.3) | 2.2 kΩ | UART cross-link (eUSCI_A1) |
+| W5 | P2.6 RXD (J1.3) | ← | P2.5 TXD (J1.4) | 2.2 kΩ | UART cross-link (eUSCI_A1) |
+| W6 | P3.4 (J1.8) | → | P3.5 (J1.9) | 2.2 kΩ | GPIO edge interrupts, LPM4 wake |
+| W7 | P3.5 (J1.9) | ← | P3.4 (J1.8) | 2.2 kΩ | GPIO edge interrupts, LPM4 wake |
+| W8 | P1.4 TB0.1 (J2.12) | → | P1.2 TA1.CCI1A (J2.19) | 2.2 kΩ | PWM → timer capture |
+| W9 | P1.2 (J2.19) | ← | P1.4 (J2.12) | 2.2 kΩ | PWM → timer capture |
+| W10 | P1.5 TB0.2 (J2.13) | → | P2.4 A7 (J1.6) | 2.2 kΩ + 10 µF at child | PWM-RC DAC → ADC |
+| W11 | P2.4 A7 (J1.6) | ← | P1.5 (J2.13) | 2.2 kΩ + 10 µF at parent | PWM-RC DAC → ADC |
+| W12 | P2.2 (J1.7) | ↔ | P2.2 (J1.7) | 2.2 kΩ | *Reserved*: future eUSCI_B0 SPI CLK (master↔slave SPI would reuse W2/W3 as SIMO/SOMI; needs an SPI-slave driver in the HAL first) |
+
+Header positions are BoosterPack-standard numbering per SLAU535B Fig. 15
+(Rev 2.0 boards; the schematic calls the connectors J4/J5). The 10 µF caps
+sit on the *receiving* board's A7 pin to GND, forming the RC that turns the
+peer's PWM into a DC level.
+
+### Why this cannot damage anything
+
+- **One driver per wire, by construction.** The wires come in crossed pairs
+  (out→in each way), so each pin has a single fixed direction that both
+  boards' firmware always configures identically — no command sequence puts
+  two push-pull drivers on one wire. I2C is open-drain on both ends by
+  protocol.
+- **Every signal passes through a series resistor** sized against the
+  MSP430FR5969's ±2 mA absolute-maximum pin clamp current (SLAS704G §5.1):
+  2.2 kΩ bounds *any* fault — miswiring during setup, both-drive contention,
+  a powered board driving an unpowered one — to <1.7 mA. The I2C pair uses
+  1.0 kΩ (for solid logic-low margin against the 10 kΩ pull-ups: low reads
+  ~0.33 V vs the 0.75 V worst-case threshold floor); its unpowered-board
+  exposure is ≤0.4 mA because nothing ever drives the bus high.
+- **The supply rails are never tied together.** Each board keeps its own
+  eZ-FET LDO (~3.6 V — measured, not the guide's nominal 3.3 V); connecting
+  them would back-drive one regulator from the other (TI warns about exactly
+  this in SLAU535B §2.4.4). Only the parent's 3V3 sources the two 10 kΩ
+  pull-ups — a ≤0.36 mA soft path, harmless in every power state.
+- **Nothing connects to 5 V, RST, TEST, or the J13 emulator block**, and
+  J2.17 (an unconnected/TEST stub on this board) stays empty.
+- Keep both boards USB-powered whenever either is (same workstation or hub;
+  W1 is still mandatory — USB ground is not a signal return).
+
+## Running
+
+```sh
+cd two_board_integration_tests
+cargo +nightly run                       # build + flash both + all suites
+cargo +nightly run -- --no-flash pwm_cross   # one suite, skip reflash
+cargo +nightly run -- wiring             # print the hookup table only
+cargo +nightly run -- identify           # who is on which /dev node?
+```
+
+`TWO_BOARD_PARENT_PORT` / `TWO_BOARD_CHILD_PORT` pin the backchannel device
+nodes explicitly if `/dev` scanning finds the wrong candidates (identity is
+still verified over the wire — the env names are just search hints).
+
+### Flashing two attached probes
+
+`DSLite load` has no probe-selection flag, so the runner generates one ccxml
+per board under `target/two_board/`, pinning the MSP430-USB connection's
+`portAddr1` property to that board's eZ-FET debug CDC node (the
+`/dev/cu.usbmodem*1` sibling of its `*3` backchannel — the same value
+mspdebug's `tilib -d` feeds MSP430.DLL). **This selection mechanism is not
+yet verified against DSLite on this machine** (it needs two boards attached
+to test). If your DSLite ignores it, symptoms are: flashing "both" boards
+reflashes one twice, and the `identity` suite fails on a firmware-revision
+mismatch. Fallback that always works — flash one board at a time:
+
+```sh
+cargo +nightly run -- flash    # with only one board's USB attached
+# swap cables, repeat, then:
+cargo +nightly run -- --no-flash
+```
+
+(The board-to-board wiring never has to change for any of this; only USB
+cables move.)
+
+## Suites
+
+| Suite | What only two boards can prove |
+|---|---|
+| `identity` | Both boards answer with their FRAM role and the same firmware revision (catches a half-flashed rig before anything can mislead). |
+| `i2c_bridge` | **First silicon verification of the HAL's eUSCI_B0 I2C slave.** Child serves a 16-register file at 0x48; parent (HAL master) runs probe / empty-address NACK / ID read / write-read with pointer autoincrement / read-only-register enforcement / pointer wrap via a standalone read. Back-to-back reads double as the speculative-TXBUF-flush check. The child's event tally is asserted exactly (8 transactions: 4 write-phase, 4 read-phase). |
+| `uart_link` | eUSCI_A1 ↔ eUSCI_A1 at 9600, echo+1 both directions of initiation: framing across two *independent* DCOs — a real baud-tolerance test a loopback jumper (same clock both ways) cannot perform. |
+| `gpio_edge` | Ten genuine wire edges (not software-set `PxIFG`) counted through the PORT3 ISR and `PxIV` demux, each direction, zero stray IV slots. |
+| `lpm4_wake` | One board parks in LPM4 (every clock stopped); the *other board* wakes it with a single edge — a truly external wake, hands-free. Exactly one edge tallied. |
+| `pwm_cross` | 1 kHz Timer_B0 PWM measured by the peer's Timer_A1 capture: frequency gate ±5 % (the two DCOs measured against each other), 25 %/75 % duty points (asymmetric, so inversion/transposition fails), both directions. |
+| `adc_dac` | The generator's PWM through the rig's RC becomes DC; the measurer reports it in millivolts. Expected = duty × the generator's own ADC-measured rail — one assertion through **both** chips' calibrated analog chains, at two duty points, both directions. |
+
+All suites are hands-free once the rig is built. **Status: code-complete,
+compiles for both targets; on-hardware verification pending** (the rig's
+first physical build). Timing constants that may need on-silicon tuning:
+the ±5 % cross-DCO frequency gate, the ADC tolerance (±5 % + 30 mV), and
+the LPM4 500 ms settle.
+
+## Firmware command protocol
+
+See the module docs in
+`two_board_test_runners/src/bin/two_board_fixture.rs` for the full
+command/response table (`i`, `P`/`C`, `s`/`m`, `e`/`t`, `g`/`p`/`1`/`w`,
+`f`/`F`/`d`/`D`/`x`/`c`/`a`, `q`). Design points worth knowing:
+
+- The fixture never blocks against the host: sub-modes (I2C slave, UART
+  echo, edge counting) poll the backchannel for `q` on every loop.
+- Cross-board driver pins are parked (0 % PWM = pin low via `OUTMOD=0`,
+  pulse line low, eUSCI_A1/B0 built lazily on first use) so an idle board
+  presents defined, current-free levels to the wires.
+- `w` (LPM4) is the one command without a timeout: if the peer never pulses,
+  the board sleeps until reset — the host orders the sequence so that can't
+  happen unattended.
+
+## Future work on the same wiring
+
+- **Cross-board SPI** over W2/W3/W12 (eUSCI_B0 SIMO/SOMI/CLK, straight-through
+  is exactly what master↔slave SPI wants) once the HAL grows an SPI-slave
+  driver.
+- **115200 cross-link** variant of `uart_link` to probe where two-DCO baud
+  tolerance actually runs out.
+- I2C slave interrupt-driven mode (`SlaveInterrupts` + `USCI_B0` vector)
+  under the same bridge suite.

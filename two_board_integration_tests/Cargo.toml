@@ -1,0 +1,17 @@
+[package]
+name = "two_board_integration_tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Host-side runner for the permanent two-LaunchPad integration rig. Like
+# hal_integration_tests, this crate is deliberately NOT a member of the repo
+# workspace: it runs on the host (see .cargo/config.toml), while the workspace
+# is configured for msp430-none-elf cross-builds. The empty [workspace] table
+# below is what detaches it.
+
+[dependencies]
+serialport = "4"
+xshell = "0.2"
+
+[workspace]
