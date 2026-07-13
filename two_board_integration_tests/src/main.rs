@@ -153,8 +153,11 @@ fn run_suites(only: &[String], no_flash: bool) -> Result<(), Box<dyn Error>> {
             .into());
         }
         deployment::build()?;
-        for port in &ports {
-            deployment::flash_to(&serial::debug_port_for(port))?;
+        // Flash USB FET #1 and #2 (TI's enumeration-index addressing). Which
+        // index is which physical board doesn't matter — identical binary —
+        // and the identity suite cross-checks firmware revisions afterwards.
+        for fet_index in 1..=ports.len() {
+            deployment::flash_to(fet_index)?;
         }
     }
 

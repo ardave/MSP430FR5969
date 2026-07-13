@@ -118,14 +118,15 @@ still verified over the wire — the env names are just search hints).
 ### Flashing two attached probes
 
 `DSLite load` has no probe-selection flag, so the runner generates one ccxml
-per board under `target/two_board/`, pinning the MSP430-USB connection's
-`portAddr1` property to that board's eZ-FET debug CDC node (the
-`/dev/cu.usbmodem*1` sibling of its `*3` backchannel — the same value
-mspdebug's `tilib -d` feeds MSP430.DLL). **This selection mechanism is not
-yet verified against DSLite on this machine** (it needs two boards attached
-to test). If your DSLite ignores it, symptoms are: flashing "both" boards
-reflashes one twice, and the `identity` suite fails on a firmware-revision
-mismatch. Fallback that always works — flash one board at a time:
+per USB FET under `target/two_board/`. TI's MSP430-USB connection selects a
+probe by **enumeration index** via the `portAddr1` property, encoded
+`100 + N` (TI ships `TIMSP430-USB.xml` = 101, `-USB2.xml` = 102,
+`-USB3.xml` = 103; feed it anything non-numeric and libmsp430_emu fails with
+"Tried to initialize USB FET number %u, but only found %d USB FETs"). The
+runner flashes FET #1 then FET #2; which index is which physical board is
+irrelevant because both get the identical binary, and the `identity` suite
+verifies both ends report the same firmware revision afterwards. Fallback if
+index selection ever misbehaves — flash one board at a time:
 
 ```sh
 cargo +nightly run -- flash    # with only one board's USB attached

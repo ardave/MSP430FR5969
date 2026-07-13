@@ -36,16 +36,6 @@ pub fn candidate_ports() -> Result<Vec<String>, Box<dyn Error>> {
     Ok(modems)
 }
 
-/// A board's eZ-FET *debug* CDC node, derived from its backchannel node: the
-/// same USB location with interface `1` instead of `3`. This is what gets
-/// pinned into a per-board ccxml so DSLite flashes a specific probe.
-pub fn debug_port_for(backchannel: &str) -> String {
-    let mut s = backchannel.to_string();
-    s.pop();
-    s.push('1');
-    s
-}
-
 /// Open a backchannel at 9600 8N1 with DTR asserted (the eZ-FET gates the
 /// board's TX on DTR) and a 1 s per-read timeout (overall bounds come from
 /// caller deadlines).
