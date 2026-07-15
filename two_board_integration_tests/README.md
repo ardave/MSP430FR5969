@@ -42,7 +42,7 @@ cargo +nightly run -- provision child
 ```
 
 Then label the boards with a marker. The parent is the board whose 3V3
-(J1.1) sources the two I2C pull-up resistors.
+(J4.1, the top-left header pin) sources the two I2C pull-up resistors.
 
 ## Wiring
 
@@ -52,27 +52,59 @@ doubles as build instructions for the rig. Summary:
 
 | # | Parent | | Child | Series | Purpose |
 |---|--------|-|-------|--------|---------|
-| W1 | GND (J2.20) | ↔ | GND (J2.20) | wire | Common ground — connect FIRST |
-| W2 | P1.6 SDA (J2.15) | ↔ | P1.6 SDA (J2.15) | 1.0 kΩ | I2C, eUSCI_B0 master↔slave |
-| W3 | P1.7 SCL (J2.14) | ↔ | P1.7 SCL (J2.14) | 1.0 kΩ | I2C, eUSCI_B0 master↔slave |
-| R1/R2 | 3V3 (J1.1) | | — | 10 kΩ ×2 | SDA/SCL pull-ups, parent side only |
-| W4 | P2.5 TXD (J1.4) | → | P2.6 RXD (J1.3) | 2.2 kΩ | UART cross-link (eUSCI_A1) |
-| W5 | P2.6 RXD (J1.3) | ← | P2.5 TXD (J1.4) | 2.2 kΩ | UART cross-link (eUSCI_A1) |
-| W6 | P3.4 (J1.8) | → | P3.5 (J1.9) | 2.2 kΩ | GPIO edge interrupts, LPM4 wake |
-| W7 | P3.5 (J1.9) | ← | P3.4 (J1.8) | 2.2 kΩ | GPIO edge interrupts, LPM4 wake |
-| W8 | P1.4 TB0.1 (J2.12) | → | P1.2 TA1.CCI1A (J2.19) | 2.2 kΩ | PWM → timer capture |
-| W9 | P1.2 (J2.19) | ← | P1.4 (J2.12) | 2.2 kΩ | PWM → timer capture |
-| W10 | P1.5 TB0.2 (J2.13) | → | P2.4 A7 (J1.6) | 2.2 kΩ | *Reserved*: future PWM-RC DAC → ADC (see below) |
-| W11 | P2.4 A7 (J1.6) | ← | P1.5 (J2.13) | 2.2 kΩ | *Reserved*: future PWM-RC DAC → ADC (see below) |
-| W12 | P2.2 (J1.7) | ↔ | P2.2 (J1.7) | 2.2 kΩ | *Reserved*: future eUSCI_B0 SPI CLK (master↔slave SPI would reuse W2/W3 as SIMO/SOMI; needs an SPI-slave driver in the HAL first) |
+| W1 | GND (J5.20) | ↔ | GND (J5.20) | wire | Common ground — connect FIRST |
+| W2 | P1.6 SDA (J5.15) | ↔ | P1.6 SDA (J5.15) | 1.0 kΩ | I2C, eUSCI_B0 master↔slave |
+| W3 | P1.7 SCL (J5.14) | ↔ | P1.7 SCL (J5.14) | 1.0 kΩ | I2C, eUSCI_B0 master↔slave |
+| R1/R2 | 3V3 (J4.1) | | — | 10 kΩ ×2 | SDA/SCL pull-ups, parent side only |
+| W4 | P2.5 TXD (J4.4) | → | P2.6 RXD (J4.3) | 2.2 kΩ | UART cross-link (eUSCI_A1) |
+| W5 | P2.6 RXD (J4.3) | ← | P2.5 TXD (J4.4) | 2.2 kΩ | UART cross-link (eUSCI_A1) |
+| W6 | P3.4 (J4.8) | → | P3.5 (J4.9) | 2.2 kΩ | GPIO edge interrupts, LPM4 wake |
+| W7 | P3.5 (J4.9) | ← | P3.4 (J4.8) | 2.2 kΩ | GPIO edge interrupts, LPM4 wake |
+| W8 | P1.4 TB0.1 (J5.12) | → | P1.2 TA1.CCI1A (J5.19) | 2.2 kΩ | PWM → timer capture |
+| W9 | P1.2 (J5.19) | ← | P1.4 (J5.12) | 2.2 kΩ | PWM → timer capture |
+| W10 | P1.5 TB0.2 (J5.13) | → | P2.4 A7 (J4.6) | 2.2 kΩ | *Reserved*: future PWM-RC DAC → ADC (see below) |
+| W11 | P2.4 A7 (J4.6) | ← | P1.5 (J5.13) | 2.2 kΩ | *Reserved*: future PWM-RC DAC → ADC (see below) |
+| W12 | P2.2 (J4.7) | ↔ | P2.2 (J4.7) | 2.2 kΩ | *Reserved*: future eUSCI_B0 SPI CLK (master↔slave SPI would reuse W2/W3 as SIMO/SOMI; needs an SPI-slave driver in the HAL first) |
 
-Header positions are BoosterPack-standard numbering per SLAU535B Fig. 15
-(Rev 2.0 boards; the schematic calls the connectors J4/J5).
+R1/R2 are the only row that isn't a board-to-board wire: they are the I2C
+pull-ups, two separate 10 kΩ resistors on the breadboard — R1 from the
+parent's 3V3 (J4.1) to the SDA node (the *parent* side of W2's 1 kΩ), R2
+from the same 3V3 pin to the SCL node (parent side of W3's). Nothing about
+them touches the child board; sourcing them from exactly one board's rail
+is what keeps the supplies separate — and is the asymmetry that *defines*
+which board is the parent.
+
+### Finding the pins
+
+"J4" is the **left** BoosterPack header and "J5" the **right** one (USB
+connector at the top). J4/J5 are the board schematic's connector
+designators, and the pin numbers are the 20-pin BoosterPack standard's
+positions — the same combination TI itself uses ("J4 Pin 1 (Vcc)",
+"J5 Pin 20 (GND)", SLAU535B §2.4.4). Positions 1–10 run *down* the left
+header and 20–11 run *down* the right header, so **pin 20 (GND) is the
+top-right pin**, directly across from pin 1 (3V3) at the top left; the
+silkscreen prints "1" and "20" at the header tops. Full map, top→bottom
+(Rev 2.0 boards, pinout per SLAU535B Fig. 15):
+
+- **J4 (left):** 1 3V3, 2 P4.2, 3 P2.6, 4 P2.5, 5 P4.3, 6 P2.4, 7 P2.2, 8 P3.4, 9 P3.5, 10 P3.6
+- **J5 (right):** 20 GND, 19 P1.2, 18 P3.0, 17 NC, 16 RST, 15 P1.6, 14 P1.7, 13 P1.5, 12 P1.4, 11 P1.3
+
+Two traps to avoid. First, match pins by their silkscreened **port names**
+(P1.6, GND, RST…), not the BoosterPack *function* labels also printed
+there: P1.6/P1.7 are silkscreened MOSI/MISO, and the left header's
+P3.5/P3.6 are silkscreened SCL/SDA — this rig's I2C does **not** go there
+(the hardware eUSCI_B0 bus is P1.6/P1.7). Second, the board's silkscreen
+also has labels named "J1" (power hooks, bottom right) and "J2" (super-cap
+Bypass/Use jumper, mid-board) — those are **different connectors**, not
+the BoosterPack headers; wire nothing to either. (Neither the user's guide
+nor the silkscreen prints "J4.x"-style pin labels — Fig. 15 identifies
+pins by signal name only, which is why the port names are the ground
+truth.)
 
 **No capacitors are required.** W10/W11 are wired now so the rig never needs
 rewiring, but their suite (`adc_dac`) is a **future addition**: it needs a
 ~10 µF cap (4.7–47 µF, any type, ≥6.3 V, + toward the pin) from each
-*receiving* board's A7 pin (J1.6) to that board's GND — with the 2.2 kΩ
+*receiving* board's A7 pin (J4.6) to that board's GND — with the 2.2 kΩ
 series R, the RC that turns the peer's PWM into a DC level. Fitting the caps
 is a ten-second breadboard retrofit at the pin; until then `adc_dac` simply
 never runs by default.
@@ -93,11 +125,16 @@ never runs by default.
   exposure is ≤0.4 mA because nothing ever drives the bus high.
 - **The supply rails are never tied together.** Each board keeps its own
   eZ-FET LDO (~3.6 V — measured, not the guide's nominal 3.3 V); connecting
-  them would back-drive one regulator from the other (TI warns about exactly
-  this in SLAU535B §2.4.4). Only the parent's 3V3 sources the two 10 kΩ
+  them would back-drive one regulator from the other (back-powering through
+  the rail is exactly the hazard class SLAU535B §2.4.4 flags when anything
+  external drives V<sub>cc</sub> — TI's mitigation there is pulling the J9
+  current-measurement jumper). Only the parent's 3V3 sources the two 10 kΩ
   pull-ups — a ≤0.36 mA soft path, harmless in every power state.
-- **Nothing connects to 5 V, RST, TEST, or the J13 emulator block**, and
-  J2.17 (an unconnected/TEST stub on this board) stays empty.
+- **Nothing connects to 5 V, RST, or the emulator section.** USB VBUS (5 V)
+  exists only on the eZ-FET half (J7 and the J13 isolation block) — never
+  wire to J3/J7/J13. RST is J5.16; J5.17 (NC on the pinout, a TEST stub on
+  the schematic) stays empty; and the silkscreened J1 power hooks and J2
+  super-cap jumper get no wires.
 - Keep both boards USB-powered whenever either is (same workstation or hub;
   W1 is still mandatory — USB ground is not a signal return).
 
