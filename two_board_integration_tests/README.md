@@ -55,7 +55,7 @@ doubles as build instructions for the rig. Summary:
 | W1 | GND (J5.20) | ↔ | GND (J5.20) | wire | Common ground — connect FIRST |
 | W2 | P1.6 SDA (J5.15) | ↔ | P1.6 SDA (J5.15) | 1.0 kΩ | I2C, eUSCI_B0 master↔slave |
 | W3 | P1.7 SCL (J5.14) | ↔ | P1.7 SCL (J5.14) | 1.0 kΩ | I2C, eUSCI_B0 master↔slave |
-| R1/R2 | 3V3 (J4.1) | | — | 10 kΩ ×2 | SDA/SCL pull-ups, parent side only |
+| R1/R2 | 3V3 (J4.1) | | — | 10 kΩ ×2 | Pull-ups to the parent's P1.6 SDA (J5.15) and P1.7 SCL (J5.14) nodes |
 | W4 | P2.5 TXD (J4.4) | → | P2.6 RXD (J4.3) | 2.2 kΩ | UART cross-link (eUSCI_A1) |
 | W5 | P2.6 RXD (J4.3) | ← | P2.5 TXD (J4.4) | 2.2 kΩ | UART cross-link (eUSCI_A1) |
 | W6 | P3.4 (J4.8) | → | P3.5 (J4.9) | 2.2 kΩ | GPIO edge interrupts, LPM4 wake |
@@ -68,8 +68,10 @@ doubles as build instructions for the rig. Summary:
 
 R1/R2 are the only row that isn't a board-to-board wire: they are the I2C
 pull-ups, two separate 10 kΩ resistors on the breadboard — R1 from the
-parent's 3V3 (J4.1) to the SDA node (the *parent* side of W2's 1 kΩ), R2
-from the same 3V3 pin to the SCL node (parent side of W3's). Nothing about
+parent's 3V3 (J4.1) to the SDA node, i.e. the net of the **parent's P1.6
+(J5.15)** pin, on the *parent* side of W2's 1 kΩ series resistor; R2 from
+the same 3V3 pin to the SCL node, the net of the **parent's P1.7 (J5.14)**
+pin, on the parent side of W3's. Nothing about
 them touches the child board; sourcing them from exactly one board's rail
 is what keeps the supplies separate — and is the asymmetry that *defines*
 which board is the parent.
