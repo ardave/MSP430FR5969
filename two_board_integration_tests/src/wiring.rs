@@ -57,8 +57,10 @@ pub fn print_banner() {
   W1   GND        J5.20        plain wire    GND        J5.20        common ground -- FIRST
   W2   P1.6 SDA   J5.15        1.0 kOhm      P1.6 SDA   J5.15        I2C master<->slave (eUSCI_B0)
   W3   P1.7 SCL   J5.14        1.0 kOhm      P1.7 SCL   J5.14        I2C master<->slave (eUSCI_B0)
-  R1   3V3        J4.1   --- 10 kOhm pull-up to W2's PARENT-side node (SDA)
-  R2   3V3        J4.1   --- 10 kOhm pull-up to W3's PARENT-side node (SCL)
+  R1   3V3        J4.1   --- 10 kOhm pull-up to the PARENT's own P1.6 SDA
+                              pin (J5.15): the parent side of W2's 1 kOhm
+  R2   3V3        J4.1   --- 10 kOhm pull-up to the PARENT's own P1.7 SCL
+                              pin (J5.14): the parent side of W3's 1 kOhm
   W4   P2.5 TXD   J4.4   -->   2.2 kOhm      P2.6 RXD   J4.3         UART cross-link (eUSCI_A1)
   W5   P2.6 RXD   J4.3   <--   2.2 kOhm      P2.5 TXD   J4.4         UART cross-link (eUSCI_A1)
   W6   P3.4 out   J4.8   -->   2.2 kOhm      P3.5 in    J4.9         GPIO edge irq + LPM4 wake

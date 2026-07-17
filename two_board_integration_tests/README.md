@@ -61,9 +61,9 @@ doubles as build instructions for the rig. Summary:
 | W6 | P3.4 (J4.8) | → | P3.5 (J4.9) | 2.2 kΩ | GPIO edge interrupts, LPM4 wake |
 | W7 | P3.5 (J4.9) | ← | P3.4 (J4.8) | 2.2 kΩ | GPIO edge interrupts, LPM4 wake |
 | W8 | P1.4 TB0.1 (J5.12) | → | P1.2 TA1.CCI1A (J5.19) | 2.2 kΩ | PWM → timer capture |
-| W9 | P1.2 (J5.19) | ← | P1.4 (J5.12) | 2.2 kΩ | PWM → timer capture |
+| W9 | P1.2 TA1.CCI1A (J5.19) | ← | P1.4 TB0.1 (J5.12) | 2.2 kΩ | PWM → timer capture |
 | W10 | P1.5 TB0.2 (J5.13) | → | P2.4 A7 (J4.6) | 2.2 kΩ | *Reserved*: future PWM-RC DAC → ADC (see below) |
-| W11 | P2.4 A7 (J4.6) | ← | P1.5 (J5.13) | 2.2 kΩ | *Reserved*: future PWM-RC DAC → ADC (see below) |
+| W11 | P2.4 A7 (J4.6) | ← | P1.5 TB0.2 (J5.13) | 2.2 kΩ | *Reserved*: future PWM-RC DAC → ADC (see below) |
 | W12 | P2.2 (J4.7) | ↔ | P2.2 (J4.7) | 2.2 kΩ | *Reserved*: future eUSCI_B0 SPI CLK (master↔slave SPI would reuse W2/W3 as SIMO/SOMI; needs an SPI-slave driver in the HAL first) |
 
 R1/R2 are the only row that isn't a board-to-board wire: they are the I2C
