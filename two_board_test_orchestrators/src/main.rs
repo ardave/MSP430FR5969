@@ -2,13 +2,13 @@
 //!
 //! Two MSP-EXP430FR5969 LaunchPads, wired together once (the exact hookup is
 //! printed at the start of every run — see [`wiring`]), each on its own USB
-//! cable. One shared fixture binary (`two_board_test_runners`, bin
+//! cable. One shared fixture binary (`two_board_test_firmwares`, bin
 //! `two_board_fixture`) is flashed to both; which board is "parent" and which
 //! is "child" lives in each board's Info FRAM, so the host re-discovers the
 //! mapping every run by asking, and nothing breaks when USB paths move.
 //!
 //! ```text
-//! cd two_board_integration_tests
+//! cd two_board_test_orchestrators
 //! cargo +nightly run -- wiring               # print the hookup table only
 //! cargo +nightly run -- provision parent     # ONE board attached: brand it
 //! cargo +nightly run -- provision child      # the other board: brand it

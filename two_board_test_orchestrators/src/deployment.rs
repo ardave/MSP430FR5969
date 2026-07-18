@@ -37,7 +37,7 @@ pub fn build() -> Result<(), Box<dyn Error>> {
     let sh = Shell::new()?;
     sh.change_dir(repo_root());
     // This runner is itself launched by cargo, which exports env that would
-    // otherwise leak into the child build (see hal_integration_tests).
+    // otherwise leak into the child build (see single_board_test_orchestrators).
     cmd!(sh, "cargo +nightly build --bin {FIXTURE_BIN}")
         .env_remove("RUSTUP_TOOLCHAIN")
         .env_remove("CARGO_BUILD_TARGET")
@@ -117,6 +117,6 @@ fn write_ccxml(fet_index: usize) -> Result<PathBuf, Box<dyn Error>> {
 pub fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("two_board_integration_tests should have a parent directory")
+        .expect("two_board_test_orchestrators should have a parent directory")
         .to_path_buf()
 }

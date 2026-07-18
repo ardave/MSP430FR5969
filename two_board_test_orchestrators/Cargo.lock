@@ -173,7 +173,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "two_board_integration_tests"
+name = "two_board_test_orchestrators"
 version = "0.1.0"
 dependencies = [
  "serialport",

@@ -4,7 +4,7 @@
 #   usage: tools/flash.sh <elf> [ccxml]
 #
 # This is the one place that knows where DSLite lives: cargo's `runner`
-# (.cargo/config.toml) and the hal_integration_tests host runner both invoke
+# (.cargo/config.toml) and the single_board_test_orchestrators host runner both invoke
 # it. The target-configuration file defaults to the repo's MSP430FR5969.ccxml,
 # resolved relative to this script so it works from any working directory; an
 # explicit ccxml may be passed as the second argument (the two-board runner

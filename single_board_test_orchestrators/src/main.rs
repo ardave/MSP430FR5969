@@ -11,7 +11,6 @@ mod timer_tests;
 mod delay_tests;
 mod deep_sleep_tests;
 mod lpmx5_tests;
-mod i2c_tests;
 mod spi_tests;
 mod adc_tests;
 mod adc_irq_tests;
@@ -40,7 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Starting Tests");
 
-    let suites: [(&str, fn() -> Result<(), Box<dyn Error>>); 27] = [
+    let suites: [(&str, fn() -> Result<(), Box<dyn Error>>); 26] = [
         ("serial_port", serial_port_tests::run),
         ("serial_irq", serial_irq_tests::run),
         ("dma", dma_tests::run),
@@ -67,7 +66,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         ("delay", delay_tests::run),
         ("deep_sleep", deep_sleep_tests::run),
         ("lpmx5", lpmx5_tests::run),
-        ("i2c", i2c_tests::run),
         // spi is interactive (loopback-jumper prompt); run it by name only.
     ];
 

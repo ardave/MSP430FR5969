@@ -1,5 +1,5 @@
 [package]
-name = "two_board_test_runners"
+name = "two_board_test_firmwares"
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -8,7 +8,7 @@ publish = false
 # role-switched binary (`two_board_fixture`) flashed to BOTH boards. Which
 # board is "parent" and which is "child" lives in Info FRAM (offset 0xA0), so
 # identity survives reflashes and USB replugs. The host-side driver is the
-# detached `two_board_integration_tests` crate.
+# detached `two_board_test_orchestrators` crate.
 
 [dependencies]
 hal = { path = "../hal", package = "msp430fr5969-hal", features = ["rt", "critical-section"] }

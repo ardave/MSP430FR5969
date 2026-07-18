@@ -3,7 +3,7 @@
 # which targets msp430-none-elf with build-std=["core"].
 #
 # NOTE: the host triple is hardcoded for Apple-silicon macOS, matching
-# hal_integration_tests. Change it if you run the suite elsewhere.
+# single_board_test_orchestrators. Change it if you run the suite elsewhere.
 
 [build]
 target = "aarch64-apple-darwin"

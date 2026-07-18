@@ -25,8 +25,8 @@ and requires the **nightly** toolchain (for `-Z build-std=core`).
 | `hal/`                   | Hardware Abstraction Layer built on the PAC: GPIO, UART, SPI, I²C (master + slave), DMA, ADC12 (single / sequence-of-channels / window comparator), timers (incl. input capture), PWM (Timer_B0 + Timer_A), RTC (calendar + alarm + prescaler ticks), watchdog, comparator, CRC16/AES256 accelerators, FRAM MPU, clock profiles up to 16 MHz, power modes down to LPM4.5, FRAM — see the module list below. Getting-started examples in `hal/examples/`. |
 | `template/`              | Copy-out starter project depending on the *published* crates: minimal `main.rs`, the full `.cargo/config.toml` link recipe, and a README with toolchain setup. Not a workspace member — copy the directory out and rename it (see [`template/README.md`](template/README.md)). |
 | `pac_consumer/`          | Example binary that exercises the PAC directly.                      |
-| `hal_test_runners/`      | On-target demo/test binaries that exercise the HAL (SPI loopback, I²C scan, I²C slave register file, PWM fade, RTC clock + alarm + ticks, DMA, ADC, LPMx.5, accelerators, comparator, MPU, input capture, clock profiles, …). |
-| `hal_integration_tests/` | Host-side hardware-in-the-loop runner: talks to the flashed test binaries over the UART backchannel and asserts their verdicts (detached from the workspace; builds for the host). |
+| `single_board_test_firmwares/`      | On-target demo/test binaries that exercise the HAL (SPI loopback, I²C scan, I²C slave register file, PWM fade, RTC clock + alarm + ticks, DMA, ADC, LPMx.5, accelerators, comparator, MPU, input capture, clock profiles, …). |
+| `single_board_test_orchestrators/` | Host-side hardware-in-the-loop runner: talks to the flashed test binaries over the UART backchannel and asserts their verdicts (detached from the workspace; builds for the host). |
 | `unit_tests/`            | Host-target unit tests for the HAL's pure math, one module per subject — baud rate, timer ticks, FRAM addressing, ADC calibration + sequence encoding, the ISR→main RX queue, the CRC16 software model, the comparator ladder math, MPU segmentation, capture timestamp math, RTC alarm + prescaler-tick encoding, and I²C slave address/IV math (detached from the workspace). |
 | `tools/`                 | Toolchain-discovery wrappers: `msp430-linker.sh` (finds TI's `msp430-elf-gcc`) and `flash.sh` (finds DSLite and flashes an ELF). Both honor env-var overrides (`MSP430_GCC`, `MSP430_DSLITE`), so no machine-specific paths are checked in. |
 
@@ -58,8 +58,8 @@ cargo +nightly run --bin pwm_fade
 cd unit_tests && cargo +nightly test
 
 # Run the hardware-in-the-loop suite (device flashed with the matching runner)
-cd hal_integration_tests && cargo +nightly run            # default suite
-cd hal_integration_tests && cargo +nightly run -- spi     # named suite
+cd single_board_test_orchestrators && cargo +nightly run            # default suite
+cd single_board_test_orchestrators && cargo +nightly run -- spi     # named suite
 ```
 
 To start your own out-of-tree project against the published crates, copy the

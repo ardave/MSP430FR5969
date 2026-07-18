@@ -6,9 +6,9 @@
 # This crate runs on the development workstation and talks to the flashed board
 # over UART — it is NOT cross-compiled to the MSP430.
 #
-# Run with:  cd hal_integration_tests && cargo test   (or `cargo run`)
+# Run with:  cd single_board_test_orchestrators && cargo test   (or `cargo run`)
 [package]
-name = "hal_integration_tests"
+name = "single_board_test_orchestrators"
 version = "0.1.0"
 edition = "2024"
 publish = false

@@ -1,6 +1,6 @@
 //! Serial plumbing for talking to BOTH boards' eUSCI_A0 backchannels.
 //!
-//! Same line-framing/timeout discipline as hal_integration_tests' serial
+//! Same line-framing/timeout discipline as single_board_test_orchestrators' serial
 //! module, extended for a two-board world: instead of demanding exactly one
 //! `/dev/cu.usbmodem*3` node, discovery returns them all and the caller
 //! identifies which board is which by *asking* (the fixture's `i` command) —

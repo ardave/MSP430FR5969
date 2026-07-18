@@ -9,13 +9,13 @@ calibrated analog chain, a real external interrupt source, and a live bus
 master for the slave driver's first-ever silicon verification.
 
 Two crates implement it, mirroring the single-board pattern
-(`hal_integration_tests` + `hal_test_runners`):
+(`single_board_test_orchestrators` + `single_board_test_firmwares`):
 
-- **`two_board_test_runners`** (workspace member) — ONE firmware fixture,
+- **`two_board_test_firmwares`** (workspace member) — ONE firmware fixture,
   `two_board_fixture`, flashed identically to BOTH boards. It is a command
   server on the eUSCI_A0 USB backchannel (9600 8N1): the host sends
   single-byte commands, the board answers with framed report/verdict lines.
-- **`two_board_integration_tests`** (this crate, detached from the workspace
+- **`two_board_test_orchestrators`** (this crate, detached from the workspace
   like the other host-side crates) — builds and flashes the fixture to both
   boards, discovers which is which, and drives all the cross-board suites.
 
@@ -34,7 +34,7 @@ Provision once, one board at a time (that's how you and the tooling agree on
 which physical board gets which name):
 
 ```sh
-cd two_board_integration_tests
+cd two_board_test_orchestrators
 # only the board that will be PARENT attached:
 cargo +nightly run -- provision parent
 # swap cables: only the board that will be CHILD attached:
@@ -143,7 +143,7 @@ never runs by default.
 ## Running
 
 ```sh
-cd two_board_integration_tests
+cd two_board_test_orchestrators
 cargo +nightly run                       # build + flash both + all suites
 cargo +nightly run -- --no-flash pwm_cross   # one suite, skip reflash
 cargo +nightly run -- wiring             # print the hookup table only
@@ -204,7 +204,7 @@ top-level CLAUDE.md).
 ## Firmware command protocol
 
 See the module docs in
-`two_board_test_runners/src/bin/two_board_fixture.rs` for the full
+`two_board_test_firmwares/src/bin/two_board_fixture.rs` for the full
 command/response table (`i`, `P`/`C`, `s`/`m`, `e`/`t`, `g`/`p`/`1`/`w`,
 `f`/`F`/`d`/`D`/`x`/`c`/`a`, `q`). Design points worth knowing:
 

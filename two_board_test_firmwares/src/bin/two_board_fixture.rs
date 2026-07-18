@@ -7,7 +7,7 @@
 
 //! Two-board integration fixture: ONE binary, flashed to BOTH LaunchPads of
 //! the permanently-wired two-board rig, driven by the host-side
-//! `two_board_integration_tests` runner over each board's own eUSCI_A0 USB
+//! `two_board_test_orchestrators` runner over each board's own eUSCI_A0 USB
 //! backchannel (9600 8N1).
 //!
 //! # Identity
