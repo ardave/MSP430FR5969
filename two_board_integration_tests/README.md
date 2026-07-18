@@ -189,11 +189,17 @@ cables move.)
 | `adc_dac` *(name-only; future addition — needs the W10/W11 caps)* | The generator's PWM through the rig's RC becomes DC; the measurer reports it in millivolts. Expected = duty × the generator's own ADC-measured rail — one assertion through **both** chips' calibrated analog chains, at two duty points, both directions. Run with `cargo +nightly run -- adc_dac` once the caps are fitted. |
 
 All suites are hands-free once the rig is built; all but `adc_dac` run by
-default (`adc_dac` is name-only until its caps exist). **Status:
-code-complete, compiles for both targets; on-hardware verification pending**
-(the rig's first physical build). Timing constants that may need on-silicon
-tuning: the ±5 % cross-DCO frequency gate, the ADC tolerance (±5 % + 30 mV),
-and the LPM4 500 ms settle.
+default (`adc_dac` is name-only until its caps exist). **Status: all six
+default suites HW-verified 2026-07-18** on the first physical rig build
+(observed: cross-DCO 991/1009 Hz on the 1 kHz PWM — the two boards' DCOs
+±1 % against each other — 250‰/750‰ duty both directions, exact 8/4/4 I2C
+transaction tally, 24-byte UART echo+1 both ways, 10/10 wire edges with a
+clean PxIV, LPM4 woken by a single peer edge each way). The bring-up
+surfaced and fixed three driver bugs the single-board rigs could never see:
+the eUSCI master's zero-length-probe STOP wedging against a clock-stretching
+slave, the slave `poll()` inverting a fast START…STOP pair, and Timer_A
+capture's arming double-latch (details in the drivers' doc comments and the
+top-level CLAUDE.md).
 
 ## Firmware command protocol
 

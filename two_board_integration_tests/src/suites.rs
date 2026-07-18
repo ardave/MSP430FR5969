@@ -15,7 +15,9 @@ use crate::serial::{self, field};
 
 const T: Duration = Duration::from_secs(10);
 
-/// Read the next non-empty line and require it to be exactly `want`.
+/// Read lines until `want` appears, echoing diagnostic lines (`X_*_PRE`,
+/// `X_*_DETAIL`) along the way; any other mismatching line — in particular a
+/// `… FAIL` verdict — is an error.
 fn expect_exact(board: &mut Board, want: &str) -> Result<(), Box<dyn Error>> {
     let deadline = Instant::now() + T;
     loop {
@@ -26,6 +28,17 @@ fn expect_exact(board: &mut Board, want: &str) -> Result<(), Box<dyn Error>> {
         println!("  [{}] {line}", board.role.as_str());
         if line == want {
             return Ok(());
+        }
+        if line.contains("_PRE ") || line.contains("_DETAIL ") {
+            continue;
+        }
+        // Echo any trailing diagnostic lines (e.g. `X_I2C_DETAIL …` after a
+        // FAIL verdict) before erroring — the board says WHY right after WHAT.
+        let drain = Instant::now() + Duration::from_secs(1);
+        while let Ok(extra) = serial::read_line(board.port.as_mut(), drain) {
+            if !extra.is_empty() {
+                println!("  [{}] {extra}", board.role.as_str());
+            }
         }
         return Err(format!(
             "[{}] expected {want:?}, got {line:?}",
@@ -85,22 +98,39 @@ pub fn identity(rig: &mut Rig) -> Result<(), Box<dyn Error>> {
 /// of which 4 ended in a write phase and 4 in a read phase.
 pub fn i2c_bridge(rig: &mut Rig) -> Result<(), Box<dyn Error>> {
     println!("== i2c_bridge ==");
+    // Pre-flight bus state from the parent's side (idle B0, pads readable):
+    // both lines must be high and the bus not busy before anything runs.
+    rig.parent.cmd_expect(b'B', "2B_B0", T)?;
+
     rig.child.cmd_expect(b's', "2B_SLAVE_ON addr=0x48", T)?;
 
-    rig.parent.cmd_expect(b'm', "2B_I2C_TEST_BEGIN", T)?;
-    for want in [
-        "X_I2C PROBE OK",
-        "X_I2C NODEV OK",
-        "X_I2C ID OK",
-        "X_I2C WRRD OK",
-        "X_I2C ROREG OK",
-        "X_I2C WRAP OK",
-        "2B_I2C_TEST_END",
-    ] {
-        expect_exact(&mut rig.parent, want)?;
-    }
+    let gauntlet = (|| -> Result<(), Box<dyn Error>> {
+        rig.parent.cmd_expect(b'm', "2B_I2C_TEST_BEGIN", T)?;
+        for want in [
+            "X_I2C PROBE OK",
+            "X_I2C NODEV OK",
+            "X_I2C ID OK",
+            "X_I2C WRRD OK",
+            "X_I2C ROREG OK",
+            "X_I2C WRAP OK",
+            "2B_I2C_TEST_END",
+        ] {
+            expect_exact(&mut rig.parent, want)?;
+        }
+        Ok(())
+    })();
 
+    // Pop the child out of serve mode and print its event tally even (and
+    // especially) when the gauntlet failed — the tally says how far the bus
+    // got before it wedged.
     let stats = rig.child.cmd_expect(b'q', "2B_SLAVE_STATS", T)?;
+    if gauntlet.is_err() {
+        // Post-mortem: both ends' B0 register dumps (UCBBUSY/UCSCLLOW in
+        // statw say who is holding the bus).
+        rig.parent.cmd_expect(b'B', "2B_B0", T)?;
+        rig.child.cmd_expect(b'B', "2B_B0", T)?;
+    }
+    gauntlet?;
     expect_field(&stats, "trans", 8, "child")?;
     expect_field(&stats, "wr", 4, "child")?;
     expect_field(&stats, "rd", 4, "child")?;

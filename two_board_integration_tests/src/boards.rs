@@ -86,8 +86,10 @@ pub struct Rig {
 }
 
 /// Ask the board at `path` who it is. Re-sends `i` every 2 s (the board may
-/// still be rebooting out of a DSLite flash) for up to `timeout`.
-pub fn identify(path: &str, timeout: Duration) -> Result<(Role, String), Box<dyn Error>> {
+/// still be rebooting out of a DSLite flash) for up to `timeout`. `None` for
+/// the role means the fixture answered but has no identity branded yet —
+/// an error for suite runs, the expected starting state for `provision`.
+pub fn identify(path: &str, timeout: Duration) -> Result<(Option<Role>, String), Box<dyn Error>> {
     let mut port = serial::open(path)?;
     // Anything buffered (stale READY announces from before we attached) is
     // seconds old — act only on what arrives after we ask.
@@ -95,6 +97,17 @@ pub fn identify(path: &str, timeout: Duration) -> Result<(Role, String), Box<dyn
 
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
+        // `q` first: if an aborted earlier run left the fixture in a sub-mode
+        // (I2C slave serve, UART echo, edge count — all of which ignore
+        // everything but `q`), pop it back to the idle command loop. Idle
+        // ignores `q`, so this is free in the normal case. The gap matters:
+        // eUSCI_A0 RX is a single-byte buffer and the fixture's idle loop
+        // polls it only every ~10 ms sleep, so two back-to-back bytes at
+        // 9600 (1.04 ms apart) usually overrun — and the fixture's poll
+        // treats an overrun read as "no command", losing BOTH bytes.
+        port.write_all(b"q")?;
+        port.flush()?;
+        std::thread::sleep(Duration::from_millis(50));
         port.write_all(b"i")?;
         port.flush()?;
         let attempt_deadline = (Instant::now() + Duration::from_secs(2)).min(deadline);
@@ -110,17 +123,7 @@ pub fn identify(path: &str, timeout: Duration) -> Result<(Role, String), Box<dyn
                 } else {
                     None
                 };
-                match role {
-                    Some(role) => return Ok((role, format!("fw={fw}"))),
-                    None => {
-                        return Err(format!(
-                            "board at {path} is UNPROVISIONED ({line:?}); run\n  \
-                             cargo +nightly run -- provision parent   (with only that board attached)\n\
-                             and provision the other board as child"
-                        )
-                        .into())
-                    }
-                }
+                return Ok((role, format!("fw={fw}")));
             }
         }
     }
@@ -147,6 +150,14 @@ pub fn discover(timeout: Duration) -> Result<Rig, Box<dyn Error>> {
     let mut child: Option<Board> = None;
     for path in candidates {
         let (role, info) = identify(&path, timeout)?;
+        let Some(role) = role else {
+            return Err(format!(
+                "board at {path} is UNPROVISIONED; run\n  \
+                 cargo +nightly run -- provision parent   (with only that board attached)\n\
+                 and provision the other board as child"
+            )
+            .into());
+        };
         println!("  {path}: {} ({info})", role.as_str());
         let port = serial::open(&path)?;
         // identify() ran on its own (now closed) handle; a tail of its last

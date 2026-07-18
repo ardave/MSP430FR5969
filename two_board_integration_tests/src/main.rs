@@ -71,7 +71,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some("identify") => {
             for path in serial::candidate_ports()? {
                 match boards::identify(&path, Duration::from_secs(15)) {
-                    Ok((role, info)) => println!("  {path}: {} ({info})", role.as_str()),
+                    Ok((Some(role), info)) => println!("  {path}: {} ({info})", role.as_str()),
+                    Ok((None, info)) => println!("  {path}: unprovisioned ({info})"),
                     Err(e) => println!("  {path}: {e}"),
                 }
             }

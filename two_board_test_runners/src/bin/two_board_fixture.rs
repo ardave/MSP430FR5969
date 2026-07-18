@@ -451,8 +451,105 @@ fn main() -> ! {
                         write_dec(&mut tx, d as u32);
                         tx.write_all(b"\r\n").ok();
                     }
-                    _ => {
-                        tx.write_all(b"2B_CAP err=nosignal\r\n").ok();
+                    (freq, duty) => {
+                        // Which measurement failed, and how (the capture
+                        // Error variants, or the out-of-range value).
+                        let code = |r: &Result<u32, hal::capture::Error>| -> &'static [u8] {
+                            match r {
+                                Ok(_) => b"ok",
+                                Err(hal::capture::Error::Timeout) => b"tmo",
+                                Err(hal::capture::Error::Overcapture) => b"ovc",
+                                Err(hal::capture::Error::LevelSync) => b"lvl",
+                            }
+                        };
+                        tx.write_all(b"X_CAP_DETAIL f=").ok();
+                        tx.write_all(code(&freq)).ok();
+                        if let Ok(f) = freq {
+                            tx.write_all(b":").ok();
+                            write_dec(&mut tx, f);
+                        }
+                        tx.write_all(b" d=").ok();
+                        tx.write_all(code(&duty.map(|d| d as u32))).ok();
+                        if let Ok(d) = duty {
+                            tx.write_all(b":").ok();
+                            write_dec(&mut tx, d as u32);
+                        }
+                        tx.write_all(b"\r\n").ok();
+                        // No capture — trace the pad→capture route. P1IN
+                        // reads the pin regardless of the mux; TA1CCTL1's CCI
+                        // bit (0x08) is the live input level as the capture
+                        // unit sees it. Pad toggling with CCI dead = the mux
+                        // isn't routing; both toggling = the capture latch
+                        // itself. ~30k polls cover several 1 kHz periods.
+                        let mut pad_tog: u16 = 0;
+                        let mut cci_tog: u16 = 0;
+                        let mut pad_last = unsafe { core::ptr::read_volatile(0x0200 as *const u8) }
+                            & (1 << 2);
+                        let mut cci_last = unsafe { core::ptr::read_volatile(0x0384 as *const u16) }
+                            & 0x0008;
+                        for _ in 0..30_000u16 {
+                            let pad = unsafe { core::ptr::read_volatile(0x0200 as *const u8) }
+                                & (1 << 2);
+                            if pad != pad_last {
+                                pad_tog = pad_tog.saturating_add(1);
+                                pad_last = pad;
+                            }
+                            let cci = unsafe { core::ptr::read_volatile(0x0384 as *const u16) }
+                                & 0x0008;
+                            if cci != cci_last {
+                                cci_tog = cci_tog.saturating_add(1);
+                                cci_last = cci;
+                            }
+                        }
+                        // Both-armed edge stream, buffered (NO UART between
+                        // waits — this mirrors measure_duty_permille's
+                        // wait→level cadence exactly). Timestamp deltas
+                        // should alternate ~2000/6000 ticks (250/750 µs at
+                        // 8 MHz); a near-zero delta = phantom double capture.
+                        cap_ch.set_edge(CapEdge::Both);
+                        let mut trace: [(u16, bool, u8); 6] = [(0, false, 0); 6];
+                        for slot in trace.iter_mut() {
+                            *slot = match cap_ch.wait_edge(20_000) {
+                                Ok(t) => (t, cap_ch.input_level(), 0),
+                                Err(hal::capture::Error::Overcapture) => (0, false, 1),
+                                Err(_) => (0, false, 2),
+                            };
+                        }
+                        cap_ch.set_edge(CapEdge::Rising);
+                        tx.write_all(b"X_CAP_EDGES").ok();
+                        for (t, lvl, err) in trace {
+                            tx.write_all(b" ").ok();
+                            match err {
+                                0 => {
+                                    write_hex16(&mut tx, t);
+                                    tx.write_all(if lvl { b":h" } else { b":l" }).ok();
+                                }
+                                1 => {
+                                    tx.write_all(b"ovc").ok();
+                                }
+                                _ => {
+                                    tx.write_all(b"err").ok();
+                                }
+                            }
+                        }
+                        tx.write_all(b"\r\n").ok();
+                        let cctl1 = unsafe { core::ptr::read_volatile(0x0384 as *const u16) };
+                        let sel0 = unsafe { core::ptr::read_volatile(0x020A as *const u8) };
+                        let sel1 = unsafe { core::ptr::read_volatile(0x020C as *const u8) };
+                        let dir = unsafe { core::ptr::read_volatile(0x0204 as *const u8) };
+                        tx.write_all(b"2B_CAP err=nosignal tog=").ok();
+                        write_dec(&mut tx, pad_tog as u32);
+                        tx.write_all(b" ccitog=").ok();
+                        write_dec(&mut tx, cci_tog as u32);
+                        tx.write_all(b" cctl1=").ok();
+                        write_hex16(&mut tx, cctl1);
+                        tx.write_all(b" sel0=").ok();
+                        write_hex16(&mut tx, sel0 as u16);
+                        tx.write_all(b" sel1=").ok();
+                        write_hex16(&mut tx, sel1 as u16);
+                        tx.write_all(b" dir=").ok();
+                        write_hex16(&mut tx, dir as u16);
+                        tx.write_all(b"\r\n").ok();
                     }
                 }
             }
@@ -464,6 +561,34 @@ fn main() -> ! {
                 write_dec(&mut tx, a7_mv);
                 tx.write_all(b" avcc_mv=").ok();
                 write_dec(&mut tx, avcc);
+                tx.write_all(b"\r\n").ok();
+            }
+
+            // ---- B0 register dump (bus post-mortem) --------------------
+            // Raw volatile reads, deliberately outside the HAL: works no
+            // matter which mode (master/slave/unconfigured) B0 is in, and
+            // perturbs nothing. STATW's UCBBUSY/UCSCLLOW say whether the
+            // bus is mid-transaction and who is holding SCL.
+            b'B' => {
+                let ctlw0 = unsafe { core::ptr::read_volatile(0x0640 as *const u16) };
+                let statw = unsafe { core::ptr::read_volatile(0x0648 as *const u16) };
+                let ifg = unsafe { core::ptr::read_volatile(0x066C as *const u16) };
+                // P1IN reads the pad level even with the pin muxed to the
+                // eUSCI — the live electrical state of SDA (P1.6) and SCL
+                // (P1.7).
+                let p1in = unsafe { core::ptr::read_volatile(0x0200 as *const u8) };
+                tx.write_all(b"2B_B0 ctlw0=").ok();
+                write_hex16(&mut tx, ctlw0);
+                tx.write_all(b" statw=").ok();
+                write_hex16(&mut tx, statw);
+                tx.write_all(b" ifg=").ok();
+                write_hex16(&mut tx, ifg);
+                tx.write_all(b" sda=").ok();
+                tx.write_all(if p1in & (1 << 6) != 0 { b"1" } else { b"0" })
+                    .ok();
+                tx.write_all(b" scl=").ok();
+                tx.write_all(if p1in & (1 << 7) != 0 { b"1" } else { b"0" })
+                    .ok();
                 tx.write_all(b"\r\n").ok();
             }
 
@@ -514,6 +639,13 @@ fn run_i2c_slave(
     let mut transactions: u16 = 0;
     let mut writes: u16 = 0;
     let mut reads: u16 = 0;
+    // Raw event tallies: which bus events actually reached this loop. On a
+    // wedged bus these localize the stall (e.g. starts seen but no RX byte
+    // vs a read-turnaround with no TX request).
+    let mut ev_start_wr: u16 = 0;
+    let mut ev_start_rd: u16 = 0;
+    let mut ev_rx: u16 = 0;
+    let mut ev_txreq: u16 = 0;
 
     tx.write_all(b"2B_SLAVE_ON addr=0x48\r\n").ok();
 
@@ -524,24 +656,34 @@ fn run_i2c_slave(
         let Some(event) = slave.poll() else { continue };
         match event {
             SlaveEvent::Start { read } => {
+                if read {
+                    ev_start_rd += 1;
+                } else {
+                    ev_start_wr += 1;
+                }
                 phase = if read { Phase::Read } else { Phase::WritePtr };
             }
-            SlaveEvent::Received(byte) => match phase {
-                Phase::WritePtr => {
-                    ptr = (byte as usize) % I2C_REGS;
-                    phase = Phase::WriteData;
-                }
-                Phase::WriteData => {
-                    // Register 0 is read-only: the master's overwrite attempt
-                    // must bounce off (the ROREG verdict on the master side).
-                    if ptr != 0 {
-                        file[ptr] = byte;
+            SlaveEvent::Received(byte) => {
+                ev_rx += 1;
+                match phase {
+                    Phase::WritePtr => {
+                        ptr = (byte as usize) % I2C_REGS;
+                        phase = Phase::WriteData;
                     }
-                    ptr = (ptr + 1) % I2C_REGS;
+                    Phase::WriteData => {
+                        // Register 0 is read-only: the master's overwrite
+                        // attempt must bounce off (the ROREG verdict on the
+                        // master side).
+                        if ptr != 0 {
+                            file[ptr] = byte;
+                        }
+                        ptr = (ptr + 1) % I2C_REGS;
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             SlaveEvent::TxRequest => {
+                ev_txreq += 1;
                 slave.write_byte(file[ptr]);
                 ptr = (ptr + 1) % I2C_REGS;
             }
@@ -564,6 +706,14 @@ fn run_i2c_slave(
     write_dec(tx, writes as u32);
     tx.write_all(b" rd=").ok();
     write_dec(tx, reads as u32);
+    tx.write_all(b" stw=").ok();
+    write_dec(tx, ev_start_wr as u32);
+    tx.write_all(b" str=").ok();
+    write_dec(tx, ev_start_rd as u32);
+    tx.write_all(b" rxb=").ok();
+    write_dec(tx, ev_rx as u32);
+    tx.write_all(b" txr=").ok();
+    write_dec(tx, ev_txreq as u32);
     tx.write_all(b"\r\n").ok();
 }
 
@@ -571,24 +721,48 @@ fn run_i2c_slave(
 /// verdict burst. The expectations are protocol-fixed (the peer is our own
 /// fixture in `s` mode), so the verdicts are computed on-board like the
 /// single-board suites; the host just asserts the `OK` lines.
+/// One `X_I2C_PRE` bus-state line: the master's view of STATW/CTLW0 and the
+/// live pad levels, emitted between gauntlet steps to localize a wedge.
+fn bus_state_line(tx: &mut Tx<UsciA0>) {
+    let ctlw0 = unsafe { core::ptr::read_volatile(0x0640 as *const u16) };
+    let statw = unsafe { core::ptr::read_volatile(0x0648 as *const u16) };
+    let p1in = unsafe { core::ptr::read_volatile(0x0200 as *const u8) };
+    tx.write_all(b"X_I2C_PRE statw=").ok();
+    write_hex16(tx, statw);
+    tx.write_all(b" ctlw0=").ok();
+    write_hex16(tx, ctlw0);
+    tx.write_all(b" sda=").ok();
+    tx.write_all(if p1in & (1 << 6) != 0 { b"1" } else { b"0" }).ok();
+    tx.write_all(b" scl=").ok();
+    tx.write_all(if p1in & (1 << 7) != 0 { b"1" } else { b"0" }).ok();
+    tx.write_all(b"\r\n").ok();
+}
+
 fn run_i2c_master_test(i2c: &mut I2c, tx: &mut Tx<UsciA0>, red: &mut impl OutputPin) {
     tx.write_all(b"2B_I2C_TEST_BEGIN\r\n").ok();
     let mut all_ok = true;
 
     // 1. The peer ACKs its address — the two-board bus is alive.
+    bus_state_line(tx);
     let probe_ok = i2c.probe(I2C_ADDR);
     all_ok &= verdict(tx, b"X_I2C PROBE", probe_ok);
 
     // 2. An empty address NACKs: the ACK above is the peer, not a stuck-low
     //    SDA or a shorted bus (which would "ACK" everything).
+    bus_state_line(tx);
     let nodev_ok = !i2c.probe(I2C_EMPTY_ADDR);
     all_ok &= verdict(tx, b"X_I2C NODEV", nodev_ok);
 
     // 3. write_read of register 0 returns the fixed ID: the full
     //    write → repeated-START → read turnaround against real silicon.
+    bus_state_line(tx);
     let mut id = [0u8; 1];
-    let id_ok = i2c.write_read(I2C_ADDR, &[0x00], &mut id).is_ok() && id[0] == I2C_ID_BYTE;
+    let id_res = i2c.write_read(I2C_ADDR, &[0x00], &mut id);
+    let id_ok = id_res.is_ok() && id[0] == I2C_ID_BYTE;
     all_ok &= verdict(tx, b"X_I2C ID", id_ok);
+    if !id_ok {
+        i2c_detail(tx, id_res, &id);
+    }
 
     // 4. Write three bytes at register 2, read them back: RX-phase pointer
     //    autoincrement, then TX-phase autoincrement, in one verdict. This
@@ -596,18 +770,27 @@ fn run_i2c_master_test(i2c: &mut I2c, tx: &mut Tx<UsciA0>, red: &mut impl Output
     //    check: the eUSCI requests TX bytes one ahead, so the ID read
     //    parked a byte in the peer's TXBUF at STOP — had the peer's driver
     //    not flushed it, it would lead (and corrupt) this read.
-    let wr_ok = i2c.write(I2C_ADDR, &[0x02, 0xA5, 0x5A, 0xC3]).is_ok();
+    bus_state_line(tx);
+    let wr_res = i2c.write(I2C_ADDR, &[0x02, 0xA5, 0x5A, 0xC3]);
     let mut back = [0u8; 3];
-    let rd_ok = i2c.write_read(I2C_ADDR, &[0x02], &mut back).is_ok();
-    let wrrd_ok = wr_ok && rd_ok && back == [0xA5, 0x5A, 0xC3];
+    let rd_res = i2c.write_read(I2C_ADDR, &[0x02], &mut back);
+    let wrrd_ok = wr_res.is_ok() && rd_res.is_ok() && back == [0xA5, 0x5A, 0xC3];
     all_ok &= verdict(tx, b"X_I2C WRRD", wrrd_ok);
+    if !wrrd_ok {
+        i2c_detail(tx, wr_res.and(rd_res), &back);
+    }
 
     // 5. Register 0 is read-only in the peer: an overwrite attempt must
     //    leave the ID intact.
-    let ro_wr_ok = i2c.write(I2C_ADDR, &[0x00, 0xFF]).is_ok();
+    bus_state_line(tx);
+    let ro_wr_res = i2c.write(I2C_ADDR, &[0x00, 0xFF]);
     let mut ro = [0u8; 1];
-    let ro_rd_ok = i2c.write_read(I2C_ADDR, &[0x00], &mut ro).is_ok();
-    all_ok &= verdict(tx, b"X_I2C ROREG", ro_wr_ok && ro_rd_ok && ro[0] == I2C_ID_BYTE);
+    let ro_rd_res = i2c.write_read(I2C_ADDR, &[0x00], &mut ro);
+    let ro_ok = ro_wr_res.is_ok() && ro_rd_res.is_ok() && ro[0] == I2C_ID_BYTE;
+    all_ok &= verdict(tx, b"X_I2C ROREG", ro_ok);
+    if !ro_ok {
+        i2c_detail(tx, ro_wr_res.and(ro_rd_res), &ro);
+    }
 
     // 6. Pointer wrap, via a standalone read transaction (START-read after a
     //    STOP, not a repeated START): set the pointer to the last register
@@ -616,11 +799,15 @@ fn run_i2c_master_test(i2c: &mut I2c, tx: &mut Tx<UsciA0>, red: &mut impl Output
     //    continue-from-previous-pointer read: the speculative TX request
     //    advances the peer's pointer by a timing-dependent amount after
     //    every read, so only an explicitly re-pointed read is deterministic.
-    let ptr_ok = i2c.write(I2C_ADDR, &[0x0F]).is_ok();
+    bus_state_line(tx);
+    let ptr_res = i2c.write(I2C_ADDR, &[0x0F]);
     let mut wrap = [0u8; 2];
-    let wrap_ok =
-        ptr_ok && i2c.read(I2C_ADDR, &mut wrap).is_ok() && wrap == [0x00, I2C_ID_BYTE];
+    let wrap_rd_res = i2c.read(I2C_ADDR, &mut wrap);
+    let wrap_ok = ptr_res.is_ok() && wrap_rd_res.is_ok() && wrap == [0x00, I2C_ID_BYTE];
     all_ok &= verdict(tx, b"X_I2C WRAP", wrap_ok);
+    if !wrap_ok {
+        i2c_detail(tx, ptr_res.and(wrap_rd_res), &wrap);
+    }
 
     if !all_ok {
         red.set_high().ok();
@@ -708,6 +895,26 @@ fn run_uart_initiator(
     tx.write_all(b"2B_UART_TEST_END\r\n").ok();
 }
 
+/// After a FAIL verdict on an I2C step: emit the transfer outcome and the
+/// bytes actually read, so a one-line host log localizes the fault (wire vs
+/// NACK vs timeout vs wrong data).
+fn i2c_detail(tx: &mut Tx<UsciA0>, res: Result<(), hal::i2c::Error>, got: &[u8]) {
+    tx.write_all(b"X_I2C_DETAIL err=").ok();
+    let code: &[u8] = match res {
+        Ok(()) => b"none",
+        Err(hal::i2c::Error::AddressNack) => b"anack",
+        Err(hal::i2c::Error::DataNack) => b"dnack",
+        Err(hal::i2c::Error::Timeout) => b"tmo",
+    };
+    tx.write_all(code).ok();
+    tx.write_all(b" got=").ok();
+    for byte in got {
+        let hex = |n: u8| if n < 10 { b'0' + n } else { b'a' + n - 10 };
+        tx.write_all(&[hex(byte >> 4), hex(byte & 0xF), b' ']).ok();
+    }
+    tx.write_all(b"\r\n").ok();
+}
+
 /// Emit `<name> OK` / `<name> FAIL` and return whether it passed.
 fn verdict(tx: &mut Tx<UsciA0>, name: &[u8], ok: bool) -> bool {
     tx.write_all(name).ok();
@@ -739,6 +946,18 @@ fn save_role(fram: &mut InfoFram, role: Role) {
     };
     let record = [MAGIC[0], MAGIC[1], byte, 0];
     fram.write(FRAM_OFFSET, &record).ok();
+}
+
+/// Write a 16-bit value as four hex digits (no core::fmt).
+fn write_hex16<W: hal::embedded_io::Write>(tx: &mut W, value: u16) {
+    let hex = |n: u8| if n < 10 { b'0' + n } else { b'a' + n - 10 };
+    let b = [
+        hex((value >> 12) as u8 & 0xF),
+        hex((value >> 8) as u8 & 0xF),
+        hex((value >> 4) as u8 & 0xF),
+        hex(value as u8 & 0xF),
+    ];
+    tx.write_all(&b).ok();
 }
 
 /// Write an unsigned value as decimal ASCII (no padding, no core::fmt).
