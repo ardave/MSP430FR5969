@@ -102,7 +102,7 @@ fn main() -> ! {
     // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in
     // that order. Every boot of the chain starts held; only the FEEDING
     // phase re-arms, explicitly.
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // Drain the reset causes first thing — consume-on-read, first reader
     // wins. This is the feature under test.

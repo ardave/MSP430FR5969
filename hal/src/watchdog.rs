@@ -9,19 +9,19 @@
 //! stopping it, and the WDT issues a PUC and the chip reboots, forever, in a
 //! loop. 32 ms is not much: `msp430-rt`'s startup (`.data` copy, `.bss` zero)
 //! plus `Peripherals::take()` (which enters a critical section) can flirt with
-//! it. The front door is [`crate::init`], which fuses the two so the ordering
+//! it. The front door is [`crate::peripherals::take`], which fuses the two so the ordering
 //! is guaranteed by construction — make it the first statement in `main`:
 //!
 //! ```ignore
 //! #[entry]
 //! fn main() -> ! {
-//!     let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+//!     let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 //!     // ...
 //! }
 //! ```
 //!
 //! ([`disable`] remains the underlying primitive: a free function callable
-//! before `Peripherals::take()`, for code that doesn't go through `init`.)
+//! before `Peripherals::take()`, for code that doesn't go through `peripherals::take`.)
 //!
 //! # The password mechanism (and why the PAC field API is a trap)
 //!
@@ -67,7 +67,7 @@
 //!
 //! To guard **boot itself** (everything between reset and the main loop),
 //! skip the disable and arm a sane timeout up front with
-//! `hal::init(WdtMode::Arm { source, interval })` — see [`WdtMode::Arm`] for
+//! `hal::peripherals::take(WdtMode::Arm { source, interval })` — see [`WdtMode::Arm`] for
 //! the boot-clock caveat.
 //!
 //! ```ignore
@@ -115,10 +115,10 @@ const TMSEL: u16 = 0x0010;
 /// `WDTCNTCL` (bit 3): writing 1 zeroes the count (self-clearing).
 const CNTCL: u16 = 0x0008;
 
-/// Boot-time watchdog policy for [`crate::init`].
+/// Boot-time watchdog policy for [`crate::peripherals::take`].
 ///
 /// `WDTCTL` cannot be partially updated — every access is a whole-register,
-/// password-keyed write — so there are exactly three things `init` can do to
+/// password-keyed write — so there are exactly three things `peripherals::take` can do to
 /// the watchdog: write hold, write a fresh configuration, or not write at
 /// all. One variant per possibility.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -137,7 +137,7 @@ pub enum WdtMode {
     /// [`Watchdog::feed`] reads the installed configuration back from the
     /// hardware, so no state needs handing over.
     ///
-    /// **Clock caveat:** at `init` time the clock tree is still at reset
+    /// **Clock caveat:** at `peripherals::take` time the clock tree is still at reset
     /// defaults (SMCLK = 1 MHz; ACLK = VLO until LFXT is started), so the
     /// timeout is denominated in *boot* clocks. `clocks::configure` moving
     /// SMCLK to 8 MHz shrinks an SMCLK-sourced timeout 8×; the crystal taking
@@ -202,7 +202,7 @@ pub enum Interval {
 /// Uses `steal()` rather than an owned peripheral: sound because a single
 /// whole-register volatile store has no read-modify-write window, and every
 /// caller either runs before `Peripherals::take()` ([`disable`]/[`arm`] via
-/// [`crate::init`]) or holds the peripheral exclusively ([`Watchdog`]).
+/// [`crate::peripherals::take`]) or holds the peripheral exclusively ([`Watchdog`]).
 fn write_ctl(low: u16) {
     let wdt = unsafe { pac::WatchdogTimer::steal() };
     wdt.wdtctl().write(|w| unsafe { w.bits(PASSWORD | (low & 0x00FF)) });
@@ -215,7 +215,7 @@ fn cfg_bits(source: ClockSource, interval: Interval) -> u16 {
 }
 
 /// Stop the watchdog. **Call this first in `main`, before
-/// `Peripherals::take()`** — or let [`crate::init`] do it for you.
+/// `Peripherals::take()`** — or let [`crate::peripherals::take`] do it for you.
 ///
 /// This is a free function rather than a method on [`Watchdog`] precisely so
 /// it needs no `Peripherals` — the whole point is to run before `take()`'s
@@ -229,10 +229,11 @@ pub fn disable() {
 }
 
 /// Arm the watchdog with a fresh `source`/`interval` and a zeroed count, in
-/// one write. Backs [`crate::init`]'s [`WdtMode::Arm`]; the owned-peripheral
-/// path is [`Watchdog::start`], which does the identical write.
-// Sole caller is `init`, which is gated on `critical-section` — without that
-// feature this is (correctly) unreachable, not a bug.
+/// one write. Backs [`crate::peripherals::take`]'s [`WdtMode::Arm`]; the
+/// owned-peripheral path is [`Watchdog::start`], which does the identical
+/// write.
+// Sole caller is `peripherals::take`, which is gated on `critical-section` —
+// without that feature this is (correctly) unreachable, not a bug.
 #[cfg_attr(not(feature = "critical-section"), allow(dead_code))]
 pub(crate) fn arm(source: ClockSource, interval: Interval) {
     write_ctl(cfg_bits(source, interval) | CNTCL);

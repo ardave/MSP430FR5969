@@ -136,7 +136,7 @@ fn measure_period_us(counter: &Counter, mask: u8, periods: u32) -> Option<u32> {
 #[entry]
 fn main() -> ! {
     // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // Performance profile: SMCLK = 8 MHz (PWM + Counter + UART BRCLK),
     // MCLK = 1 MHz (the sampling loops).

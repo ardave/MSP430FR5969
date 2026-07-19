@@ -166,7 +166,7 @@ fn stamp_bracketed(ts: u16, before: u16, after: u16) -> bool {
 #[entry]
 fn main() -> ! {
     // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // Low-power profile: MCLK = SMCLK = 1 MHz, and — the part this fixture
     // exists for — ACLK on the 32.768 kHz LFXT crystal, so the ACLK-capture

@@ -100,7 +100,7 @@ const CYCLES: usize = 8;
 #[entry]
 fn main() -> ! {
     // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // Performance profile: SMCLK = 8 MHz (UART BRCLK), MCLK = 1 MHz (Delay).
     // The ADC itself rides MODOSC and needs none of this during conversion.

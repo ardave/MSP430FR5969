@@ -45,7 +45,7 @@ const UART_LINE: &[u8] = b"UART 9600 8N1 OK\r\n";
 #[entry]
 fn main() -> ! {
     // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // Clock profile: MCLK 1 MHz, SMCLK 8 MHz. SMCLK feeds the UART BRCLK below.
     let clocks = hal::clocks::configure(p.cs);

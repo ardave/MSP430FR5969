@@ -1,6 +1,6 @@
 [package]
 name = "msp430fr5969-hal"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Hardware abstraction layer (embedded-hal) for the TI MSP430FR5969 microcontroller"
 repository = "https://github.com/ardave/MSP430FR5969"
@@ -69,4 +69,8 @@ required-features = ["rt", "critical-section"]
 
 [[example]]
 name = "pwm_fade"
+required-features = ["rt", "critical-section"]
+
+[[example]]
+name = "touch"
 required-features = ["rt", "critical-section"]

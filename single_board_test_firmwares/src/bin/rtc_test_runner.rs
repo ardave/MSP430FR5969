@@ -155,7 +155,7 @@ fn RTC() {
 #[entry]
 fn main() -> ! {
     // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // Low-power profile: ACLK on the 32.768 kHz LFXT crystal — required for the
     // RTC to keep correct time. SMCLK = 1 MHz still feeds the UART BRCLK.

@@ -135,7 +135,7 @@ fn save(fram: &mut InfoFram, r: &Record) {
 #[entry]
 fn main() -> ! {
     // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // Continuation only on the exact reset force_reset produces; everything
     // else (reflash, reset button, power-on, surprise PUC) starts cold.

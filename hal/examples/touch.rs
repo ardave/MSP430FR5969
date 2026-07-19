@@ -41,8 +41,8 @@ const GATE_TICKS: u16 = 2_000;
 #[entry]
 fn main() -> ! {
     // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in
-    // that order — hal::init fuses them so the ordering can't be gotten wrong.
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    // that order — hal::peripherals::take fuses them so the ordering can't be gotten wrong.
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // MCLK 1 MHz, SMCLK 8 MHz.
     let clocks = hal::clocks::configure(p.cs);

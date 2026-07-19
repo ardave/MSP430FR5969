@@ -77,7 +77,7 @@ const PATTERN: [u8; 16] = [
 #[entry]
 fn main() -> ! {
     // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // MCLK 1 MHz, SMCLK 8 MHz. SMCLK feeds the UART BRCLK. MCLK at 1 MHz keeps
     // FRAM wait states (FRCTL0.NWAITS) at their reset default of 0.

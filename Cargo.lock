@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "msp430fr5969-hal"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "critical-section",
  "embedded-hal",

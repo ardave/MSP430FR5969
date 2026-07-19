@@ -87,7 +87,7 @@ fn PORT4() {
 #[entry]
 fn main() -> ! {
     // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // Performance profile: SMCLK = 8 MHz for the UART. The DCO restarting on
     // each wake is automatic; no clock is needed *during* LPM4.

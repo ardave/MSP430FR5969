@@ -32,7 +32,7 @@ use msp430 as _;
 
 #[entry]
 fn main() -> ! {
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // MCLK 1 MHz, SMCLK 8 MHz. SMCLK clocks Timer_B0.
     let clocks = hal::clocks::configure(p.cs);

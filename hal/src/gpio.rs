@@ -459,7 +459,7 @@ pub fn clear_irq<PORT: PortRegs>(pin: u8) {
 /// pads. Call once at boot, after configuring pins:
 ///
 /// ```ignore
-/// let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+/// let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 /// // ... configure pins ...
 /// hal::gpio::unlock_pins(&p.pmm);
 /// ```
@@ -477,7 +477,7 @@ pub fn clear_irq<PORT: PortRegs>(pin: u8) {
 /// interrupt and lost.
 ///
 /// That ordering is why this is an explicit free function and not folded
-/// into [`GpioExt::split`] or `hal::init`. It takes `&pac::Pmm` because the
+/// into [`GpioExt::split`] or `hal::peripherals::take`. It takes `&pac::Pmm` because the
 /// latch lives in the PMM, not the ports; `PM5CTL0` has no password byte
 /// (unlike `PMMCTL0`), so the PAC field API is safe here.
 pub fn unlock_pins(pmm: &pac::Pmm) {

@@ -49,7 +49,7 @@
 //! # Example
 //!
 //! ```ignore
-//! let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+//! let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 //! let reasons = hal::sys::ResetReasons::drain(&p.sys);
 //! if reasons.contains(hal::sys::ResetReason::WatchdogTimeout) {
 //!     // last life ended with an unfed dog — maybe come up in safe mode

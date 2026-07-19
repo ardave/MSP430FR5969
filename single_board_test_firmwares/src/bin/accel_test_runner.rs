@@ -134,7 +134,7 @@ const CBC_CT: [u8; 32] = [
 #[entry]
 fn main() -> ! {
     // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // MCLK 1 MHz, SMCLK 8 MHz (SMCLK feeds the UART BRCLK below).
     let clocks = hal::clocks::configure(p.cs);
