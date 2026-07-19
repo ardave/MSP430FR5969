@@ -10,6 +10,8 @@ pub mod aes;
 mod baud;
 pub mod capture;
 mod capture_math;
+pub mod captio;
+mod captio_ctl;
 pub mod clocks;
 pub mod comp_e;
 mod comp_ladder;

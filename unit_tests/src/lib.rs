@@ -18,6 +18,7 @@ mod adc_cal;
 mod adc_seq;
 mod baud;
 mod capture_math;
+mod captio_ctl;
 mod comp_ladder;
 mod crc_soft;
 mod fram_addr;
