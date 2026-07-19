@@ -381,6 +381,11 @@ impl I2c {
     fn recover(&self) {
         unsafe {
             set_bits_u16(BASE + CTLW0, UCSWRST);
+            // A pending UCTXSTT/UCTXSTP survives the UCSWRST toggle
+            // (HW-observed 2026-07-18: a wedged STOP request read back as set
+            // through multiple resets) — clear them explicitly or the next
+            // transaction's "prior STOP finished?" gate times out forever.
+            clear_bits_u16(BASE + CTLW0, UCTXSTT | UCTXSTP);
             clear_bits_u16(BASE + IFG, UCCLTOIFG | UCNACKIFG);
             clear_bits_u16(BASE + CTLW0, UCSWRST);
         }
@@ -431,6 +436,43 @@ impl I2c {
         ops: &[embedded_hal::i2c::Operation<'_>],
         send_stop: bool,
     ) -> Result<(), Error> {
+        let total: usize = ops
+            .iter()
+            .map(|o| match o {
+                embedded_hal::i2c::Operation::Write(bytes) => bytes.len(),
+                _ => 0,
+            })
+            .sum();
+
+        // A zero-length write with STOP (the probe) must request the STOP
+        // *together with* the START, so the silicon sequences address → STOP
+        // itself. Requesting the STOP only after the address completes wedges
+        // against a clock-stretching slave (e.g. a polled eUSCI peer): the
+        // STOP generator starts while the slave still holds SCL for its
+        // START-flag service, and UCTXSTP then never self-clears — not even
+        // through UCSWRST — poisoning every later transaction.
+        // (HW-observed 2026-07-18 on the two-board rig; a non-stretching
+        // BME280 never exposed it.)
+        if total == 0 && send_stop {
+            unsafe {
+                clear_bits_u16(BASE + IFG, UCNACKIFG | UCCLTOIFG);
+                set_bits_u16(BASE + CTLW0, UCTR | UCTXSTT | UCTXSTP);
+            }
+            // The STOP completing (self-clearing) covers the address phase
+            // too; the NACK flag then holds the probe's verdict.
+            self.wait(|| {
+                if unsafe { read_reg(BASE + CTLW0) } & UCTXSTP == 0 {
+                    Some(Ok(()))
+                } else {
+                    None
+                }
+            })?;
+            if unsafe { read_reg(BASE + IFG) } & UCNACKIFG != 0 {
+                return Err(Error::AddressNack);
+            }
+            return Ok(());
+        }
+
         // Transmitter + START. Clearing UCNACKIFG/UCCLTOIFG first so we read a
         // fresh address-ACK result (and no stale timeout) below.
         unsafe {
@@ -720,7 +762,12 @@ impl I2cSlave {
     /// 2. **`Stop` before `Start`** — after a STOP-then-new-START missed
     ///    window, both flags are pending and transaction order must be
     ///    preserved. A repeated START sets only `UCSTTIFG`, so it is not
-    ///    reordered by this.
+    ///    reordered by this. The inverse pile-up — a whole START…STOP
+    ///    transaction (e.g. a zero-length probe) inside one poll gap — has
+    ///    the same two flags pending but the opposite correct order;
+    ///    `UCBBUSY` tells the cases apart (busy = a new transaction is open,
+    ///    the STOP is old, Stop first; idle = the STOP ended the pending
+    ///    START's transaction, Start first).
     /// 3. **`TxRequest` last, gated** — only inside a master-read transaction
     ///    (see the `transmitting` field), and only once `Stop`/`Start` have
     ///    been dealt with, so a request belonging to a finished transaction
@@ -733,7 +780,18 @@ impl I2cSlave {
             return Some(SlaveEvent::Received(unsafe { read_reg(BASE + RXBUF) } as u8));
         }
 
-        if ifg & UCSTPIFG != 0 {
+        // Both a START and a STOP can be pending in one poll gap; UCBBUSY
+        // disambiguates which came first (the flags alone cannot). Bus IDLE:
+        // the STOP ended the pending START's own transaction (a fast
+        // START…STOP fitting inside one poll interval — e.g. a zero-length
+        // probe; HW-observed 2026-07-18) → deliver Start first. Bus BUSY: the
+        // STOP closed the previous transaction and the START opened the
+        // current one (the missed-window back-to-back case) → Stop first.
+        let start_first = ifg & UCSTPIFG != 0
+            && ifg & UCSTTIFG != 0
+            && unsafe { read_reg(BASE + STATW) } & UCBBUSY == 0;
+
+        if ifg & UCSTPIFG != 0 && !start_first {
             unsafe { clear_bits_u16(BASE + IFG, UCSTPIFG) };
             let was_transmitting = self.transmitting;
             self.transmitting = false;

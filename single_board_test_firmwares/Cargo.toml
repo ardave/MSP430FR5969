@@ -1,5 +1,5 @@
 [package]
-name = "hal_test_runners"
+name = "single_board_test_firmwares"
 version = "0.1.0"
 edition = "2024"
 
@@ -16,10 +16,6 @@ clock_high_speed = []
 
 [dependencies]
 hal = { path = "../hal", package = "msp430fr5969-hal", features = ["rt", "critical-section"] }
-# Third-party embedded-hal 1.0 driver for the BME280, used by the bme280_env
-# binary. Driving a real ecosystem crate through hal::i2c::I2c is the strongest
-# validation that our embedded_hal::i2c::I2c impl is correct and interoperable.
-bme280 = "0.5"
 msp430 = { version = "0.4.1", features = ["critical-section-single-core"] }
 # Shared state between the TIMER0_A1 ISR and main lives in a critical-section
 # Mutex. msp430 (above) provides the single-core impl; this is the front-end API

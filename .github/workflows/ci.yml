@@ -22,7 +22,7 @@ name: CI
 #
 # WHAT IT DOES NOT DO
 #   - It does NOT flash or run anything on hardware (no device in CI); the
-#     hardware-in-the-loop suite in `hal_integration_tests/` stays a local,
+#     hardware-in-the-loop suite in `single_board_test_orchestrators/` stays a local,
 #     board-attached workflow.
 #   - It does NOT run lint/format checks (rustfmt/clippy) -- compilation only.
 

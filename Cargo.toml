@@ -1,9 +1,10 @@
 [workspace]
 members = [
     "hal",
-    "hal_test_runners",
+    "single_board_test_firmwares",
     "pac",
     "pac_consumer",
+    "two_board_test_firmwares",
 ]
 resolver = "3"
 

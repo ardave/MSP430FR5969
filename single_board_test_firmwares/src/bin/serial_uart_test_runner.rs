@@ -14,7 +14,7 @@ use msp430_rt::entry;
 use msp430 as _;
 
 // Baud rate (and its matching confirmation line) are selected at *build time* so
-// one fixture source covers multiple rates — see hal_test_runners's `[features]`.
+// one fixture source covers multiple rates — see single_board_test_firmwares's `[features]`.
 // Default is 9600; `--features baud_115200` overrides it. The confirmation line
 // is a fixed byte string per rate rather than a formatted integer, because
 // pulling in `core::fmt` to print the number would not fit the FRAM budget.

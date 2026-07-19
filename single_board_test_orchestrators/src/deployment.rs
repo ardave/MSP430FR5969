@@ -1,7 +1,7 @@
-//! Building and flashing of `hal_test_runners` MSP430 fixture binaries.
+//! Building and flashing of `single_board_test_firmwares` MSP430 fixture binaries.
 //!
 //! Each peripheral's integration tests are driven by a dedicated on-device
-//! binary under `hal_test_runners/src/bin/`. The helpers here cross-compile and
+//! binary under `single_board_test_firmwares/src/bin/`. The helpers here cross-compile and
 //! flash any of them by name, so every `*_tests.rs` module can stand its
 //! fixture up with one call (typically `build_and_flash("<bin>")`) instead of
 //! duplicating the cargo/DSLite plumbing.
@@ -21,7 +21,7 @@ const FLASH_SH: &str = "tools/flash.sh";
 /// repo root.
 const TARGET_DIR: &str = "target/msp430-none-elf/debug";
 
-/// Cross-compile the named `hal_test_runners` binary for the MSP430 and flash it to
+/// Cross-compile the named `single_board_test_firmwares` binary for the MSP430 and flash it to
 /// the attached board. The common entry point for a test module's `run()`.
 pub fn build_and_flash(bin: &str) -> Result<(), Box<dyn Error>> {
     build_and_flash_with_features(bin, &[])
@@ -36,7 +36,7 @@ pub fn build_and_flash_with_features(bin: &str, features: &[&str]) -> Result<(),
     Ok(())
 }
 
-/// Cross-compile the named `hal_test_runners` binary for `msp430-none-elf`, enabling
+/// Cross-compile the named `single_board_test_firmwares` binary for `msp430-none-elf`, enabling
 /// any requested cargo features.
 pub fn build(bin: &str, features: &[&str]) -> Result<(), Box<dyn Error>> {
     println!("  building {bin} (msp430-none-elf){}...", feature_note(features));
@@ -74,7 +74,7 @@ fn feature_note(features: &[&str]) -> String {
     }
 }
 
-/// Flash an already-built `hal_test_runners` binary to the board via DSLite.
+/// Flash an already-built `single_board_test_firmwares` binary to the board via DSLite.
 pub fn flash(bin: &str) -> Result<(), Box<dyn Error>> {
     let root = repo_root();
     let elf = root.join(TARGET_DIR).join(bin);
@@ -165,6 +165,6 @@ fn human_size(bytes: u64) -> String {
 pub fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("hal_integration_tests should have a parent directory")
+        .expect("single_board_test_orchestrators should have a parent directory")
         .to_path_buf()
 }

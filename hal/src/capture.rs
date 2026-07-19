@@ -379,6 +379,7 @@ impl<T: Instance> CaptureTimer<T> {
             channel,
             software,
             tick_hz: self.tick_hz,
+            fresh_arm: true,
             _instance: PhantomData,
         }
     }
@@ -421,6 +422,14 @@ pub struct CaptureChannel<T: Instance> {
     channel: u8,
     software: bool,
     tick_hz: u32,
+    /// Set by (re)arming, cleared by the first collected capture. The first
+    /// real edge after arming can double-latch (`CCIFG` + immediate `COV`
+    /// from one physical transition — the capture synchronizer picking up
+    /// its initial state; HW-observed 2026-07-18, deterministic per input
+    /// phase at arming). Both stamps are genuine times of that same edge, so
+    /// [`wait_edge`](CaptureChannel::wait_edge) tolerates `COV` exactly once
+    /// after an arm instead of failing the measurement.
+    fresh_arm: bool,
     _instance: PhantomData<T>,
 }
 
@@ -476,10 +485,20 @@ impl<T: Instance> CaptureChannel<T> {
     /// Change which edge captures. Discards any pending capture and clears
     /// `COV` (an edge armed differently must not be paired with one from the
     /// old arming).
+    ///
+    /// The change passes through `CM = 0` (capture disabled): SLAU367P's
+    /// "Changing Capture Inputs" note requires capture configuration changes
+    /// to happen only with `CM = 0` or `CAP = 0` — rewriting `CMx` on an
+    /// armed channel can latch an unintended capture event (HW-observed
+    /// 2026-07-18: a live 1 kHz input measured cleanly under either arming,
+    /// but a rising→both rewrite mid-stream poisoned the next paired
+    /// measurement with a spurious `COV`).
     pub fn set_edge(&mut self, edge: Edge) {
+        rmw(self.cctl(), |v| v & !CM_MASK);
         rmw(self.cctl(), |v| {
-            (v & !(CM_MASK | CCIFG | COV)) | edge.cm_bits()
+            (v & !(CCIFG | COV)) | edge.cm_bits()
         });
+        self.fresh_arm = true;
     }
 
     /// Manufacture one rising edge in hardware by flipping the `CCIS` input
@@ -511,13 +530,21 @@ impl<T: Instance> CaptureChannel<T> {
             let cctl = unsafe { read_reg(self.cctl()) };
             if cctl & CCIFG != 0 {
                 let ts = unsafe { read_reg(self.ccr()) };
-                // COV here means a second edge landed before this read: `ts`
-                // is the *second* edge and any pairing math would be wrong.
+                // COV here normally means a second edge landed before this
+                // read: `ts` is the *second* edge and any pairing math would
+                // be wrong. Exception: the first capture after (re)arming may
+                // double-latch a SINGLE edge (see `fresh_arm`) — there `ts`
+                // is still that edge's genuine time, so it is returned.
                 if unsafe { read_reg(self.cctl()) } & COV != 0 {
                     rmw(self.cctl(), |v| v & !(CCIFG | COV));
-                    return Err(Error::Overcapture);
+                    if !self.fresh_arm {
+                        return Err(Error::Overcapture);
+                    }
+                    self.fresh_arm = false;
+                    return Ok(ts);
                 }
                 rmw(self.cctl(), |v| v & !CCIFG);
+                self.fresh_arm = false;
                 return Ok(ts);
             }
             let now = unsafe { read_reg(T::BASE + R) };

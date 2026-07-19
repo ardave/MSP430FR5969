@@ -1,0 +1,12 @@
+# This crate runs on the HOST (it drives two flashed boards over their USB
+# serial backchannels), so it must escape the repo-root .cargo/config.toml,
+# which targets msp430-none-elf with build-std=["core"].
+#
+# NOTE: the host triple is hardcoded for Apple-silicon macOS, matching
+# single_board_test_orchestrators. Change it if you run the suite elsewhere.
+
+[build]
+target = "aarch64-apple-darwin"
+
+[unstable]
+build-std = ["std"]
