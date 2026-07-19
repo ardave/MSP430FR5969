@@ -94,7 +94,7 @@ fn USCI_A0() {
 #[entry]
 fn main() -> ! {
     // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // Performance profile: SMCLK = 8 MHz — BRCLK for the UART, which is why
     // the sleep below is LPM0 (SMCLK must keep running to receive).

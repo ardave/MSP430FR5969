@@ -88,7 +88,7 @@ const FRAM_SCRATCH: u32 = 0x80;
 #[entry]
 fn main() -> ! {
     // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // Reset reason before anything else: a PUC loop from a bad FRCTL/CS write
     // would show up here (e.g. "FRCTL password violation") instead of the

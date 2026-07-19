@@ -118,7 +118,7 @@ notes — lives in [`TODO_pac_datasheet_discrepancies.md`](TODO_pac_datasheet_di
 The `hal` crate (`hal/`) is a hand-written abstraction layer on top of the PAC.
 It re-exports `pac`, `embedded_hal`, `embedded_hal_nb`, `embedded_io`, and
 `embedded_storage`, and passes the `rt` and `critical-section` features through
-to the PAC. The crate-root `hal::init(watchdog::WdtMode)` is the boot front
+to the PAC. The crate-root `hal::peripherals::take(watchdog::WdtMode)` is the boot front
 door: watchdog policy + `Peripherals::take()`, fused in guaranteed order.
 Implemented modules (hardware-verified on the MSP430FR5969 LaunchPad unless
 noted otherwise):

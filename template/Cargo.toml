@@ -16,7 +16,7 @@ publish = false
 # The HAL, from crates.io. `rt` brings in the msp430-rt runtime (reset handler,
 # vector table, #[entry]); `critical-section` lets interrupt-enable registers
 # be shared safely and is required for Peripherals::take().
-hal = { package = "msp430fr5969-hal", version = "0.2", features = ["rt", "critical-section"] }
+hal = { package = "msp430fr5969-hal", version = "0.3", features = ["rt", "critical-section"] }
 # Provides the critical-section single-core implementation (DINT/EINT). The
 # `use msp430 as _;` in main.rs force-links it so the symbols resolve.
 msp430 = { version = "0.4.1", features = ["critical-section-single-core"] }

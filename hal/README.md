@@ -37,7 +37,7 @@ arming order — which are documented in the relevant module docs.
 
 ## Getting started
 
-The boot front door is `hal::init`, which stops (or arms) the watchdog and
+The boot front door is `hal::peripherals::take`, which stops (or arms) the watchdog and
 takes the PAC peripherals in a guaranteed-safe order:
 
 ```rust,ignore
@@ -49,7 +49,7 @@ use msp430fr5969_hal as hal;
 
 #[entry]
 fn main() -> ! {
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
     // configure clocks, split GPIO ports, bring up drivers...
     loop {}
 }

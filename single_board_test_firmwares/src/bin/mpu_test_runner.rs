@@ -172,7 +172,7 @@ fn save_state(fram: &mut InfoFram, state: u8, flags: u8) {
 #[entry]
 fn main() -> ! {
     // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // Why did this life begin? An MPU-violation PUC reports MpuSeg3; a
     // reflash or reset-button press latches ResetPin (a power cycle

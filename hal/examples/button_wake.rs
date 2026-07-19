@@ -68,7 +68,7 @@ fn PORT4() {
 
 #[entry]
 fn main() -> ! {
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // SMCLK = 8 MHz for the UART; no clock is needed *during* LPM4 (the DCO
     // restarts automatically on each wake).

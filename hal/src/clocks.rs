@@ -35,7 +35,7 @@
 //! wait states, then raise MCLK** (and the reverse to slow down). Rather than
 //! trust every caller to remember that, the wait-state write lives *inside*
 //! [`configure_max_speed`], sequenced before the DCO switch — the same
-//! fused-ordering pattern as [`crate::init`] (watchdog before `take()`) and
+//! fused-ordering pattern as [`crate::peripherals::take`] (watchdog before `take()`) and
 //! the GPIO interrupt arming order. At 8 MHz and below the reset value
 //! (`NWAITS = 0`) is correct and nothing needs configuring.
 //!

@@ -87,7 +87,7 @@ fn WDT() {
 #[entry]
 fn main() -> ! {
     // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // Reset forensics *before* anything else touches the system module: a
     // watchdog-timeout cause here would mean interval mode PUC'd after all.

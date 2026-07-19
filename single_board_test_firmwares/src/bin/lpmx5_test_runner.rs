@@ -105,7 +105,7 @@ fn RTC() {
 #[entry]
 fn main() -> ! {
     // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // Why did this life begin? Drained once, destructively, before anything
     // else can touch it. A genuine LPMx.5 wake reports Lpm5WakeUp; a reflash

@@ -66,7 +66,7 @@ enum Phase {
 #[entry]
 fn main() -> ! {
     // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // MCLK 1 MHz, SMCLK 8 MHz (the UART's BRCLK; the I2C slave itself is
     // clocked by the master's SCL and needs nothing from the clock tree).

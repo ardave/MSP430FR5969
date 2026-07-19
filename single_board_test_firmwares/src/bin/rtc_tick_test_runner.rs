@@ -144,7 +144,7 @@ fn wait_until(counter: &Counter, max_ticks: u16, mut done: impl FnMut() -> bool)
 #[entry]
 fn main() -> ! {
     // Stop the watchdog (default ~32 ms fuse) and take the peripherals, in that order.
-    let p = hal::init(hal::watchdog::WdtMode::Hold).unwrap();
+    let p = hal::peripherals::take(hal::watchdog::WdtMode::Hold).unwrap();
 
     // Low-power profile: ACLK = LFXT 32.768 kHz crystal (the RTC's clock and
     // the whole point), MCLK = SMCLK = 1 MHz.
