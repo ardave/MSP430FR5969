@@ -2,11 +2,11 @@
 #![no_main]
 
 //! High-speed clock-profile integration fixture — **no wiring at all**,
-//! driven by the host-side `clock_speed_tests` runner.
+//! driven by the host-side `clock_speed_test_orchestrator` runner.
 //!
 //! ```text
-//! cargo +nightly build --bin clock_speed_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/clock_speed_test_runner
+//! cargo +nightly build --bin clock_speed_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/clock_speed_test_firmware
 //! ```
 //!
 //! Default build runs [`hal::clocks::configure_max_speed`] (MCLK = SMCLK =

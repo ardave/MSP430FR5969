@@ -18,7 +18,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 /// Flash the 9600-baud fixture and verify its confirmation burst — the baseline
 /// rate the board has been validated at.
 fn test_9600_8_n_1_comms() -> Result<(), Box<dyn Error>> {
-    deployment::build_and_flash("serial_uart_test_runner")?;
+    deployment::build_and_flash("serial_uart_test_firmware")?;
     verify_confirmation_burst(9600)
 }
 
@@ -28,12 +28,12 @@ fn test_9600_8_n_1_comms() -> Result<(), Box<dyn Error>> {
 /// own clean ceiling at 8 MHz is 500 kbaud — an exact /16 — but the backchannel
 /// is the practical limiter, so 115200 is the reliable high-rate test.)
 fn test_115200_8_n_1_comms() -> Result<(), Box<dyn Error>> {
-    deployment::build_and_flash_with_features("serial_uart_test_runner", &["baud_115200"])?;
+    deployment::build_and_flash_with_features("serial_uart_test_firmware", &["baud_115200"])?;
     verify_confirmation_burst(115200)
 }
 
 /// Open the board's UART at `baud` (8N1) and verify it emits the fixed
-/// confirmation burst that the `serial_uart_test_runner*` fixtures transmit once per second.
+/// confirmation burst that the `serial_uart_test_firmware*` fixtures transmit once per second.
 ///
 /// The fixtures are identical apart from their line rate and the baud they name
 /// in the `UART <baud> 8N1 OK` line, so a single verifier parameterized on

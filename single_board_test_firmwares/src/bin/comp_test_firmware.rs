@@ -7,11 +7,11 @@
 #![feature(asm_experimental_arch)]
 
 //! Comp_E analog-comparator integration fixture — **no wiring at all**,
-//! driven by the host-side `comp_tests` runner.
+//! driven by the host-side `comp_test_orchestrator` runner.
 //!
 //! ```text
-//! cargo +nightly build --bin comp_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/comp_test_runner
+//! cargo +nightly build --bin comp_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/comp_test_firmware
 //! ```
 //!
 //! Two tricks make a comparator testable with nothing on the desk:

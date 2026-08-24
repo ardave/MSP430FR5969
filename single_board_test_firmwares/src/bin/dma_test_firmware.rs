@@ -5,14 +5,14 @@
 #![feature(abi_msp430_interrupt)]
 
 //! DMA integration fixture: the three-channel controller end to end, framed
-//! for the host-side `dma_tests` runner. **Hands-free** — no jumpers, no
+//! for the host-side `dma_test_orchestrator` runner. **Hands-free** — no jumpers, no
 //! external parts; the only I/O is the backchannel UART (eUSCI_A0, 9600 8N1),
 //! and *every byte of it is itself moved by DMA* (`serial::DmaTx` on channel
 //! 0), so the report arriving intact is the UART-TX-pacing test.
 //!
 //! ```text
-//! cargo +nightly build --bin dma_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/dma_test_runner
+//! cargo +nightly build --bin dma_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/dma_test_firmware
 //! ```
 //!
 //! # What it checks

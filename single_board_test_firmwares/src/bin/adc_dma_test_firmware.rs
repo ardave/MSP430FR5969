@@ -2,15 +2,15 @@
 #![no_main]
 
 //! ADC12_B + DMA integration fixture — **no wiring at all**, driven by the
-//! host-side `adc_dma_tests` runner. The converter free-runs in
+//! host-side `adc_dma_test_orchestrator` runner. The converter free-runs in
 //! repeat-single-channel mode while a DMA channel drains every `MEM0` result
 //! into a buffer (`ADC12IFG0` is DMA trigger 26; the DMA's word read of MEM0
 //! is what clears the flag), so a 32-sample burst costs the CPU nothing but
 //! the setup and the wait.
 //!
 //! ```text
-//! cargo +nightly build --bin adc_dma_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/adc_dma_test_runner
+//! cargo +nightly build --bin adc_dma_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/adc_dma_test_firmware
 //! ```
 //!
 //! # What it checks

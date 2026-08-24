@@ -1,7 +1,7 @@
 //! Shared serial-port helpers for talking to flashed fixtures over the eUSCI_A0
 //! UART backchannel.
 //!
-//! Peripheral-agnostic plumbing that any `*_tests.rs` module reporting over the
+//! Peripheral-agnostic plumbing that any `*_test_orchestrator.rs` module reporting over the
 //! UART can reuse, so the line-framing and timeout logic lives in one place.
 
 use std::error::Error;

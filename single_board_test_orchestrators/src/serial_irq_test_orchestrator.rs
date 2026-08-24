@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use crate::deployment;
 use crate::serial::read_line;
 
-/// The `serial_irq_test_runner` fixture reports over the backchannel at the
+/// The `serial_irq_test_firmware` fixture reports over the backchannel at the
 /// project's baseline 9600 8N1.
 const BAUD: u32 = 9600;
 
@@ -32,7 +32,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 /// could produce. The trailing stats line then proves the queue never dropped
 /// and the ISR saw no receive errors.
 fn test_interrupt_echo() -> Result<(), Box<dyn Error>> {
-    deployment::build_and_flash("serial_irq_test_runner")?;
+    deployment::build_and_flash("serial_irq_test_firmware")?;
 
     let port_path = crate::serial::resolve_port()?;
 

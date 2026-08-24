@@ -16,11 +16,11 @@
 //! the `TIMER0_A0` interrupt) and, by snapshotting `now()` either side of the
 //! sleep, measures how long the part was actually out. Reports a framed pass/fail
 //! verdict over the UART backchannel (eUSCI_A0, 9600 8N1), driven by the host-side
-//! `deep_sleep_tests` runner. No wiring needed beyond the LaunchPad.
+//! `deep_sleep_test_orchestrator` runner. No wiring needed beyond the LaunchPad.
 //!
 //! ```text
-//! cargo +nightly build --bin deep_sleep_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/deep_sleep_test_runner
+//! cargo +nightly build --bin deep_sleep_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/deep_sleep_test_firmware
 //! ```
 //!
 //! # What it checks

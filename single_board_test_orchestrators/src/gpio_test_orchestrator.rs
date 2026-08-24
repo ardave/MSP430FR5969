@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use crate::deployment;
 use crate::serial::read_line;
 
-/// The `gpio_irq_test_runner` fixture reports over the backchannel at the
+/// The `gpio_irq_test_firmware` fixture reports over the backchannel at the
 /// project's baseline 9600 8N1.
 const BAUD: u32 = 9600;
 
@@ -24,12 +24,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 /// edge), so this validates enable → vector → PxIV demux → auto-clear on both
 /// PORT1 and PORT4 end-to-end.
 fn test_port_irq_self_check() -> Result<(), Box<dyn Error>> {
-    deployment::build_and_flash("gpio_irq_test_runner")?;
+    deployment::build_and_flash("gpio_irq_test_firmware")?;
     verify_self_check_burst()
 }
 
 /// Open the board's UART (8N1) and verify the fixed verdict burst the
-/// `gpio_irq_test_runner` fixture transmits once per second.
+/// `gpio_irq_test_firmware` fixture transmits once per second.
 fn verify_self_check_burst() -> Result<(), Box<dyn Error>> {
     let port_path = crate::serial::resolve_port()?;
 

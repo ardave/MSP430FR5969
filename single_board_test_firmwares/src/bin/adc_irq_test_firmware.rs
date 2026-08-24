@@ -18,12 +18,12 @@
 //! `ADC12IFG0` in hardware: one bus access, result collected, interrupt
 //! acknowledged. Reports a framed pass/fail verdict over the UART backchannel
 //! (eUSCI_A0, 9600 8N1 on `/dev/cu.usbmodem11203`), driven by the host-side
-//! `adc_irq_tests` runner. **No wiring** — the source is the internal
+//! `adc_irq_test_orchestrator` runner. **No wiring** — the source is the internal
 //! (AVCC–AVSS)/2 supply monitor (channel A31).
 //!
 //! ```text
-//! cargo +nightly build --bin adc_irq_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/adc_irq_test_runner
+//! cargo +nightly build --bin adc_irq_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/adc_irq_test_firmware
 //! ```
 //!
 //! # What it checks

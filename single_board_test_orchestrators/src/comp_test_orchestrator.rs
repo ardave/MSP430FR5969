@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use crate::deployment;
 use crate::serial::read_line;
 
-/// The `comp_test_runner` fixture reports over the backchannel at the
+/// The `comp_test_firmware` fixture reports over the backchannel at the
 /// project's baseline 9600 8N1.
 const BAUD: u32 = 9600;
 
@@ -41,7 +41,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 /// Flash the comparator fixture (hands-free) and assert one complete verdict
 /// burst.
 fn test_comp_fixture() -> Result<(), Box<dyn Error>> {
-    deployment::build_and_flash("comp_test_runner")?;
+    deployment::build_and_flash("comp_test_firmware")?;
 
     let port_path = crate::serial::resolve_port()?;
 

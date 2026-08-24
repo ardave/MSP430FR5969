@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use crate::deployment;
 use crate::serial::read_line;
 
-/// The `wdt_interval_test_runner` fixture reports over the backchannel at the
+/// The `wdt_interval_test_firmware` fixture reports over the backchannel at the
 /// project's baseline 9600 8N1.
 const BAUD: u32 = 9600;
 
@@ -22,12 +22,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 /// WDT_A is on-chip. The fixture proves the inverted personality — expiry fires
 /// the `WDT` vector at the configured ~1.05 s cadence and never resets the chip.
 fn test_interval_self_check() -> Result<(), Box<dyn Error>> {
-    deployment::build_and_flash("wdt_interval_test_runner")?;
+    deployment::build_and_flash("wdt_interval_test_firmware")?;
     verify_self_check_burst()
 }
 
 /// Open the board's UART (8N1) and verify the fixed verdict burst the
-/// `wdt_interval_test_runner` fixture transmits once per second.
+/// `wdt_interval_test_firmware` fixture transmits once per second.
 fn verify_self_check_burst() -> Result<(), Box<dyn Error>> {
     let port_path = crate::serial::resolve_port()?;
 

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use crate::deployment;
 use crate::serial::read_line;
 
-/// The `timer_test_runner` fixture reports over the backchannel at the project's
+/// The `timer_test_firmware` fixture reports over the backchannel at the project's
 /// baseline 9600 8N1.
 const BAUD: u32 = 9600;
 
@@ -23,12 +23,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 /// this validates the free-running counter, software capture, and the overflow +
 /// `now32` path end-to-end.
 fn test_counter_self_check() -> Result<(), Box<dyn Error>> {
-    deployment::build_and_flash("timer_test_runner")?;
+    deployment::build_and_flash("timer_test_firmware")?;
     verify_self_check_burst()
 }
 
 /// Open the board's UART (8N1) and verify the fixed verdict burst the
-/// `timer_test_runner` fixture transmits once per second.
+/// `timer_test_firmware` fixture transmits once per second.
 ///
 /// The fixture computes all three verdicts at startup and always emits the
 /// complete burst, so a body mismatch after BEGIN is a real failure (a failed

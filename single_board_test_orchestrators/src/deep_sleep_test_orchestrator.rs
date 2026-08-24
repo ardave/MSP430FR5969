@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use crate::deployment;
 use crate::serial::read_line;
 
-/// The `deep_sleep_test_runner` fixture reports over the backchannel at the
+/// The `deep_sleep_test_firmware` fixture reports over the backchannel at the
 /// project's baseline 9600 8N1.
 const BAUD: u32 = 9600;
 
@@ -23,12 +23,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 /// by the populated 32.768 kHz crystal, validating `schedule_wake_in` +
 /// `enter_lpm3` end-to-end.
 fn test_lpm3_wake_self_check() -> Result<(), Box<dyn Error>> {
-    deployment::build_and_flash("deep_sleep_test_runner")?;
+    deployment::build_and_flash("deep_sleep_test_firmware")?;
     verify_self_check_burst()
 }
 
 /// Open the board's UART (8N1) and verify the fixed verdict burst the
-/// `deep_sleep_test_runner` fixture transmits once per second.
+/// `deep_sleep_test_firmware` fixture transmits once per second.
 ///
 /// The fixture runs four LPM3 sleep/wake cycles at startup, then always emits the
 /// complete burst, so a body mismatch after BEGIN is a real failure. A missing

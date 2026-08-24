@@ -11,13 +11,13 @@
 //! A self-checking sibling of the human-facing `rtc_clock` demo: instead of just
 //! printing the wall clock, it runs a startup self-check and reports a framed
 //! pass/fail verdict over the UART backchannel (eUSCI_A0, 9600 8N1 on
-//! `/dev/cu.usbmodem11203`), driven by the host-side `rtc_tests` runner. Like the
+//! `/dev/cu.usbmodem11203`), driven by the host-side `rtc_test_orchestrator` runner. Like the
 //! demo it needs no wiring beyond the LaunchPad — RTC_B is on-chip — but it does
 //! need the populated 32.768 kHz LFXT crystal (see below).
 //!
 //! ```text
-//! cargo +nightly build --bin rtc_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/rtc_test_runner
+//! cargo +nightly build --bin rtc_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/rtc_test_firmware
 //! ```
 //!
 //! # What it checks

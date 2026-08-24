@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use crate::deployment;
 use crate::serial::read_line;
 
-/// The `spi_test_runner` fixture reports over the backchannel at the project's
+/// The `spi_test_firmware` fixture reports over the backchannel at the project's
 /// baseline 9600 8N1.
 const BAUD: u32 = 9600;
 
@@ -26,7 +26,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 /// and check the round-trips.
 fn test_loopback_round_trips() -> Result<(), Box<dyn Error>> {
     prompt_for_loopback_jumpers()?;
-    deployment::build_and_flash("spi_test_runner")?;
+    deployment::build_and_flash("spi_test_firmware")?;
     verify_loopback_burst()
 }
 
@@ -75,7 +75,7 @@ fn prompt_for_loopback_jumpers() -> Result<(), Box<dyn Error>> {
 }
 
 /// Open the board's UART (8N1) and verify the fixed verdict burst the
-/// `spi_test_runner` fixture transmits once per second.
+/// `spi_test_firmware` fixture transmits once per second.
 ///
 /// The fixture transfers once per bus at startup and always emits the complete
 /// burst, so a body mismatch after BEGIN is a real failure: `SPI B0/A1 LOOPBACK

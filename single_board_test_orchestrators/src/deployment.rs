@@ -2,7 +2,7 @@
 //!
 //! Each peripheral's integration tests are driven by a dedicated on-device
 //! binary under `single_board_test_firmwares/src/bin/`. The helpers here cross-compile and
-//! flash any of them by name, so every `*_tests.rs` module can stand its
+//! flash any of them by name, so every `*_test_orchestrator.rs` module can stand its
 //! fixture up with one call (typically `build_and_flash("<bin>")`) instead of
 //! duplicating the cargo/DSLite plumbing.
 
@@ -29,7 +29,7 @@ pub fn build_and_flash(bin: &str) -> Result<(), Box<dyn Error>> {
 
 /// Like [`build_and_flash`], but enables the given cargo `--features` on the
 /// build. Lets one fixture source cover multiple compile-time configurations
-/// (e.g. `serial_uart_test_runner` built at 9600 vs `baud_115200`) without a second binary.
+/// (e.g. `serial_uart_test_firmware` built at 9600 vs `baud_115200`) without a second binary.
 pub fn build_and_flash_with_features(bin: &str, features: &[&str]) -> Result<(), Box<dyn Error>> {
     build(bin, features)?;
     flash(bin)?;

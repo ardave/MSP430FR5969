@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use crate::deployment;
 use crate::serial::read_line;
 
-/// The `capture_test_runner` fixture reports over the backchannel at the
+/// The `capture_test_firmware` fixture reports over the backchannel at the
 /// project's baseline 9600 8N1.
 const BAUD: u32 = 9600;
 
@@ -98,7 +98,7 @@ fn prompt_for_jumper() -> Result<(), Box<dyn Error>> {
 /// `require_pwm` decides whether the two jumper-dependent lines must be `OK`
 /// or may be `SKIP`.
 fn verify_burst(require_pwm: bool) -> Result<(), Box<dyn Error>> {
-    deployment::build_and_flash("capture_test_runner")?;
+    deployment::build_and_flash("capture_test_firmware")?;
 
     let port_path = crate::serial::resolve_port()?;
 

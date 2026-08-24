@@ -7,11 +7,11 @@
 #![feature(asm_experimental_arch)]
 
 //! Timer_A input-capture integration fixture — hands-free except for one
-//! **optional** jumper, driven by the host-side `capture_tests` runner.
+//! **optional** jumper, driven by the host-side `capture_test_orchestrator` runner.
 //!
 //! ```text
-//! cargo +nightly build --bin capture_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/capture_test_runner
+//! cargo +nightly build --bin capture_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/capture_test_firmware
 //! ```
 //!
 //! Capture timer: **TA1** on SMCLK (1 MHz under the low-power clock profile,

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use crate::deployment;
 use crate::serial::read_line;
 
-/// The `dma_test_runner` fixture reports over the backchannel at the
+/// The `dma_test_firmware` fixture reports over the backchannel at the
 /// project's baseline 9600 8N1.
 const BAUD: u32 = 9600;
 
@@ -45,7 +45,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 /// the payload via `Rx::read_exact_dma` on channel 1 and echoes it `+1`
 /// through the DMA transmit path).
 fn test_dma_fixture() -> Result<(), Box<dyn Error>> {
-    deployment::build_and_flash("dma_test_runner")?;
+    deployment::build_and_flash("dma_test_firmware")?;
 
     let port_path = crate::serial::resolve_port()?;
 

@@ -10,14 +10,14 @@
 //! a relaxation oscillator and counts it on its silicon-paired internal timer
 //! (CAPTIO0 → TA2, CAPTIO1 → TA3, both via `INCLK`). Reports a framed
 //! pass/fail verdict over the UART backchannel (eUSCI_A0, 9600 8N1), driven
-//! by the host-side `captio_tests` runner. **No wiring at all** — the
+//! by the host-side `captio_test_orchestrator` runner. **No wiring at all** — the
 //! oscillator's stimulus is the pad's own parasitic capacitance, so a bare
 //! pad oscillates in the ~3 MHz ballpark all by itself (HW-measured; faster
 //! the less copper hangs off the pad).
 //!
 //! ```text
-//! cargo +nightly build --bin captio_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/captio_test_runner
+//! cargo +nightly build --bin captio_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/captio_test_firmware
 //! ```
 //!
 //! # What it checks

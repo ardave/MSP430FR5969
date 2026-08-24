@@ -2,7 +2,7 @@
 #![no_main]
 
 //! ADC12_B sequence-of-channels integration fixture — **no wiring at all**,
-//! driven by the host-side `adc_seq_tests` runner. One hardware trigger scans
+//! driven by the host-side `adc_seq_test_orchestrator` runner. One hardware trigger scans
 //! several *different* inputs (`CONSEQ = 1` + MSC) into `MEM0..MEMn` — the
 //! datalogger shape single-channel fixtures structurally cannot check,
 //! because here the verdicts are **order-sensitive**: the three members'
@@ -10,8 +10,8 @@
 //! mapping puts temperature counts in a supply window and fails loudly.
 //!
 //! ```text
-//! cargo +nightly build --bin adc_seq_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/adc_seq_test_runner
+//! cargo +nightly build --bin adc_seq_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/adc_seq_test_firmware
 //! ```
 //!
 //! # The scan

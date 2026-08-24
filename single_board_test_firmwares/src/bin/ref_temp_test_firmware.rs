@@ -2,7 +2,7 @@
 #![no_main]
 
 //! REF_A + ADC12_B **absolute measurement** integration fixture — validates
-//! with NO external wiring, driven by the host-side `ref_a_tests` runner.
+//! with NO external wiring, driven by the host-side `ref_a_test_orchestrator` runner.
 //!
 //! This is the other half of the `adc_internal` fixture's story. That one
 //! proves the converter works *ratiometrically* (AVCC reference) and that the

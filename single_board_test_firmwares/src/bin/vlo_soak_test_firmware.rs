@@ -2,7 +2,7 @@
 #![no_main]
 
 //! VLO/ACLK boot-race soak instrument — **no wiring at all**, driven by the
-//! host-side `vlo_soak_tests` runner (name-only suite: `cargo +nightly run
+//! host-side `vlo_soak_test_orchestrator` runner (name-only suite: `cargo +nightly run
 //! -- vlo_soak`; not in the default set — it reboots the chip 200 times).
 //!
 //! # Why this exists

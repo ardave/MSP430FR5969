@@ -10,14 +10,14 @@
 //! interrupts from the RTC's own divider chain (`RT0PS`/`RT1PS`, `RTxIP`
 //! interval taps), demuxed on the shared `RTC` vector and waking the part
 //! from **LPM3**. Reports a framed pass/fail verdict over the UART
-//! backchannel (eUSCI_A0, 9600 8N1), driven by the host-side `rtc_tick_tests`
+//! backchannel (eUSCI_A0, 9600 8N1), driven by the host-side `rtc_tick_test_orchestrator`
 //! runner. **No wiring** — but, like every RTC fixture, it **requires the
 //! 32.768 kHz LFXT crystal** (populated on the LaunchPad): the prescalers
 //! divide ACLK's crystal, which is exactly why their ticks survive LPM3.
 //!
 //! ```text
-//! cargo +nightly build --bin rtc_tick_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/rtc_tick_test_runner
+//! cargo +nightly build --bin rtc_tick_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/rtc_tick_test_firmware
 //! ```
 //!
 //! # What it checks

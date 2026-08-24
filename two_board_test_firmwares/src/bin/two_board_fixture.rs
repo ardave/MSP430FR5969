@@ -107,7 +107,7 @@ const FRAM_OFFSET: u32 = 0xA0;
 const MAGIC: [u8; 2] = [b'2', b'B'];
 
 /// I2C slave register file: address, size, fixed read-only ID in register 0.
-/// Same shape as the single-board `i2c_slave_test_runner` fixture.
+/// Same shape as the single-board `i2c_slave_test_firmware` fixture.
 const I2C_ADDR: u8 = 0x48;
 const I2C_REGS: usize = 16;
 const I2C_ID_BYTE: u8 = 0x69;

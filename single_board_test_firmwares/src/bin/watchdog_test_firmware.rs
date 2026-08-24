@@ -5,13 +5,13 @@
 //! `hal::sys`.
 //!
 //! Reports over the UART backchannel (eUSCI_A0, 9600 8N1 on
-//! `/dev/cu.usbmodem11203`), driven by the host-side `watchdog_tests` runner.
+//! `/dev/cu.usbmodem11203`), driven by the host-side `watchdog_test_orchestrator` runner.
 //! Needs no wiring beyond the LaunchPad itself — WDT_A, SYS, and FRAM are all
 //! on-chip.
 //!
 //! ```text
-//! cargo +nightly build --bin watchdog_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/watchdog_test_runner
+//! cargo +nightly build --bin watchdog_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/watchdog_test_firmware
 //! ```
 //!
 //! # What it checks — a test that reboots itself, twice
@@ -80,7 +80,7 @@ use msp430_rt::entry;
 use msp430 as _;
 
 /// Info FRAM offset of this fixture's state block — well clear of the boot
-/// counter the `fram_test_runner` fixture keeps at offset 0.
+/// counter the `fram_test_firmware` fixture keeps at offset 0.
 const STATE_OFFSET: u32 = 0x100;
 
 /// Marks the state block as written by this firmware (layout version in the

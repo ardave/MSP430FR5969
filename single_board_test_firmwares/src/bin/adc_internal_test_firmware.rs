@@ -2,7 +2,7 @@
 #![no_main]
 
 //! ADC12_B **internal-channel** integration fixture — validates with NO external
-//! wiring, driven by the host-side `adc_tests` runner.
+//! wiring, driven by the host-side `adc_test_orchestrator` runner.
 //!
 //! Reads the converter's two on-chip sources, so the only thing the test harness
 //! does is flash and listen on the UART backchannel:
@@ -17,7 +17,7 @@
 //! - **(AVCC–AVSS)/2 supply monitor.** Measured against the AVCC reference this
 //!   is ratiometric, so it must read ≈ **half full-scale (~2048 counts)**
 //!   regardless of the actual supply (which is ~3.6 V on this LaunchPad — see
-//!   `ref_temp_test_runner`). That fixed, predictable value is the point: it
+//!   `ref_temp_test_firmware`). That fixed, predictable value is the point: it
 //!   confirms the ADC converts correctly with nothing connected. The reading is
 //!   self-checked against a ±10% window of half-scale on-device.
 //! - **Temperature sensor (raw).** Reads **~0** here — the sensor is part of
@@ -25,7 +25,7 @@
 //!   fixture *deliberately never does*: the near-zero reading proves both that
 //!   the ADC reports a dead channel honestly and that nothing brings REF_A up
 //!   behind our back. (Verified on hardware 2026-06-27.) The powered, calibrated
-//!   counterpart is the `ref_temp_test_runner` fixture.
+//!   counterpart is the `ref_temp_test_firmware` fixture.
 //!
 //! # Framed output for the host runner
 //!
@@ -62,7 +62,7 @@ use msp430 as _;
 // AVCC in millivolts — the ADC reference (VRSEL = 0), used to scale counts on
 // the human info line only (the self-check verdict is ratiometric and does not
 // depend on this). ~3.6 V on this LaunchPad: the eZ-FET LDO feeds the rail
-// 3.6 V, not 3.3 V — measured 2026-07-03 via REF_A (`ref_temp_test_runner`).
+// 3.6 V, not 3.3 V — measured 2026-07-03 via REF_A (`ref_temp_test_firmware`).
 const AVCC_MV: u32 = 3630;
 
 // Half-scale at 12-bit, and a ±10% acceptance window for the supply self-check.

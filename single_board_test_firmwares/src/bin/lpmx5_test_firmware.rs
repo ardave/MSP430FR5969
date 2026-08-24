@@ -11,7 +11,7 @@
 //! of this test is a **separate life of `main`**, chained through a little
 //! state machine persisted in Info FRAM (which, being nonvolatile, is exactly
 //! the LPMx.5 state-keeping idiom the test also demonstrates). The host-side
-//! `lpmx5_tests` module drives it over the UART backchannel (eUSCI_A0,
+//! `lpmx5_test_orchestrator` module drives it over the UART backchannel (eUSCI_A0,
 //! 9600 8N1) — including *waking the board*: the UART RX line is physically
 //! P2.1, and a start bit is a falling edge, so the host wakes LPM4.5 by
 //! sending a byte at a pin armed as a GPIO wake source. The byte itself is

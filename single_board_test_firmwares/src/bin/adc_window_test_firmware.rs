@@ -11,15 +11,15 @@
 //! `ADC12IFGR2` flags, crossings demuxed on `ADC12IV`, and the free-running
 //! threshold watch (`Adc::start_monitor`) waking the CPU from **LPM0**.
 //! Reports a framed pass/fail verdict over the UART backchannel (eUSCI_A0,
-//! 9600 8N1), driven by the host-side `adc_window_tests` runner. **No
+//! 9600 8N1), driven by the host-side `adc_window_test_orchestrator` runner. **No
 //! wiring** — the input is the internal (AVCC–AVSS)/2 supply monitor
 //! (channel A31), which reads ~half scale (≈ 2048 at 12-bit) by
 //! construction, so windows placed around / entirely below / entirely above
 //! half scale make all three comparator outcomes reachable from software.
 //!
 //! ```text
-//! cargo +nightly build --bin adc_window_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/adc_window_test_runner
+//! cargo +nightly build --bin adc_window_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/adc_window_test_firmware
 //! ```
 //!
 //! # What it checks

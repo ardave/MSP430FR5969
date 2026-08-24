@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use crate::deployment;
 use crate::serial::read_line;
 
-/// The `clock_speed_test_runner` fixture reports over the backchannel at the
+/// The `clock_speed_test_firmware` fixture reports over the backchannel at the
 /// project's baseline 9600 8N1 — from a **16 MHz BRCLK**, which is itself
 /// under test here.
 const BAUD: u32 = 9600;
@@ -60,7 +60,7 @@ pub fn run_high_speed() -> Result<(), Box<dyn Error>> {
 /// selecting the profile under test, and assert one complete verdict burst
 /// plus the wall-clock repeat period.
 fn test_clock_speed_fixture(features: &[&str]) -> Result<(), Box<dyn Error>> {
-    deployment::build_and_flash_with_features("clock_speed_test_runner", features)?;
+    deployment::build_and_flash_with_features("clock_speed_test_firmware", features)?;
 
     let port_path = crate::serial::resolve_port()?;
 

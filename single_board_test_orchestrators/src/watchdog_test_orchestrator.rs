@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use crate::deployment;
 use crate::serial::read_line;
 
-/// The `watchdog_test_runner` fixture reports over the backchannel at the
+/// The `watchdog_test_firmware` fixture reports over the backchannel at the
 /// project's baseline 9600 8N1.
 const BAUD: u32 = 9600;
 
@@ -23,7 +23,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 /// FRAM that carries state across the fixture's self-inflicted reboots are
 /// all on-chip.
 fn test_watchdog_reset_chain() -> Result<(), Box<dyn Error>> {
-    deployment::build_and_flash("watchdog_test_runner")?;
+    deployment::build_and_flash("watchdog_test_firmware")?;
     verify_verdict_burst()
 }
 

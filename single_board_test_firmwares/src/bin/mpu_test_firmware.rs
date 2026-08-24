@@ -7,14 +7,14 @@
 //! `SYSNMI`, PUC reset) are software-only.
 //!
 //! ```text
-//! cargo +nightly build --bin mpu_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/mpu_test_runner
+//! cargo +nightly build --bin mpu_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/mpu_test_firmware
 //! ```
 //!
 //! # Shape: a state machine across a deliberate reset
 //!
 //! The PUC-on-violation path can only be tested by *taking* the PUC, so (like
-//! `lpmx5_test_runner`) this fixture persists its progress in Info FRAM and
+//! `lpmx5_test_firmware`) this fixture persists its progress in Info FRAM and
 //! runs across reboots — one flash covers all lives:
 //!
 //! - **Cold phase** (fresh flash / reset button / power-on): six verdicts
@@ -81,7 +81,7 @@ use msp430_rt::entry;
 // pac's Peripherals::take().
 use msp430 as _;
 
-/// State record home in Info FRAM (lpmx5_test_runner owns 0x60..0x64; this
+/// State record home in Info FRAM (lpmx5_test_firmware owns 0x60..0x64; this
 /// fixture takes 0x70..0x74). Layout: `[b'M', b'P', state, flags]`.
 const FRAM_OFFSET: u32 = 0x70;
 const MAGIC: [u8; 2] = [b'M', b'P'];

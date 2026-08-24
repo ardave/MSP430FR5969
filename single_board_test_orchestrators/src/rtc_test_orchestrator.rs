@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use crate::deployment;
 use crate::serial::read_line;
 
-/// The `rtc_test_runner` fixture reports over the backchannel at the project's
+/// The `rtc_test_firmware` fixture reports over the backchannel at the project's
 /// baseline 9600 8N1.
 const BAUD: u32 = 9600;
 
@@ -23,11 +23,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 /// this validates the load-and-read-back, the 1 Hz advance, and the alarm
 /// (polled latch semantics + the RTCIV-demuxed interrupt waking LPM3) end-to-end.
 fn test_calendar_self_check() -> Result<(), Box<dyn Error>> {
-    deployment::build_and_flash("rtc_test_runner")?;
+    deployment::build_and_flash("rtc_test_firmware")?;
     verify_self_check_burst()
 }
 
-/// Open the board's UART (8N1) and verify the fixed verdict burst the `rtc_test_runner`
+/// Open the board's UART (8N1) and verify the fixed verdict burst the `rtc_test_firmware`
 /// fixture transmits once per second.
 ///
 /// The fixture loads the calendar to a known instant, reads it back, checks

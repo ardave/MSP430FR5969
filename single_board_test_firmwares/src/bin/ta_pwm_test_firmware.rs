@@ -5,7 +5,7 @@
 //! up-mode/`OUTMOD` machinery as the Timer_B0 driver, on the blocks that
 //! free TB0 — and with it the P1.4–P1.7 pins — from the PWM-vs-eUSCI_B0
 //! conflict. Reports a framed pass/fail verdict over the UART backchannel
-//! (eUSCI_A0, 9600 8N1), driven by the host-side `ta_pwm_tests` runner.
+//! (eUSCI_A0, 9600 8N1), driven by the host-side `ta_pwm_test_orchestrator` runner.
 //!
 //! **No wiring at all** — the observation trick: `P1IN` reflects the pad
 //! level even while the secondary-function output unit drives it, so the
@@ -17,8 +17,8 @@
 //! and an inverted, stuck, or mis-mapped output cannot fake any of it.
 //!
 //! ```text
-//! cargo +nightly build --bin ta_pwm_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/ta_pwm_test_runner
+//! cargo +nightly build --bin ta_pwm_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/ta_pwm_test_firmware
 //! ```
 //!
 //! # What it checks

@@ -13,12 +13,12 @@
 //! the tick arrives at the configured cadence, and that the chip demonstrably
 //! does *not* reset while the "watchdog" expires over and over. Reports a
 //! framed pass/fail verdict over the UART backchannel (eUSCI_A0, 9600 8N1 on
-//! `/dev/cu.usbmodem11203`), driven by the host-side `wdt_interval_tests`
+//! `/dev/cu.usbmodem11203`), driven by the host-side `wdt_interval_test_orchestrator`
 //! runner. No wiring — WDT_A is on-chip.
 //!
 //! ```text
-//! cargo +nightly build --bin wdt_interval_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/wdt_interval_test_runner
+//! cargo +nightly build --bin wdt_interval_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/wdt_interval_test_firmware
 //! ```
 //!
 //! # What it checks

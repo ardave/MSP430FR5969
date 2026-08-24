@@ -12,11 +12,11 @@
 //! crystal and the DCO are independent oscillators, so a `Delay` that runs fast or
 //! slow shows up as a measured duration that misses its target. Reports a framed
 //! pass/fail verdict over the UART backchannel (eUSCI_A0, 9600 8N1), driven by the
-//! host-side `delay_tests` runner. No wiring needed beyond the LaunchPad.
+//! host-side `delay_test_orchestrator` runner. No wiring needed beyond the LaunchPad.
 //!
 //! ```text
-//! cargo +nightly build --bin delay_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/delay_test_runner
+//! cargo +nightly build --bin delay_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/delay_test_firmware
 //! ```
 //!
 //! # What it checks

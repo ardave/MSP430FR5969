@@ -2,7 +2,7 @@
 #![no_main]
 
 //! SPI loopback fixture for the eUSCI SPI master driver, framed for the
-//! host-side `spi_tests` runner. Covers **two instances in one flash**:
+//! host-side `spi_test_orchestrator` runner. Covers **two instances in one flash**:
 //! eUSCI_B0 and eUSCI_A1.
 //!
 //! This is the hardware-in-the-loop counterpart to the interactive SPI loopback
@@ -21,13 +21,13 @@
 //! driver coverage by construction — it shares every line of code with A1.
 //!
 //! ```text
-//! cargo +nightly build --bin spi_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/spi_test_runner
+//! cargo +nightly build --bin spi_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/spi_test_firmware
 //! ```
 //!
 //! # Wiring
 //!
-//! Driven by `spi_tests`, which prints the jumper hookup and waits for the
+//! Driven by `spi_test_orchestrator`, which prints the jumper hookup and waits for the
 //! operator before flashing. Each SPI master needs its own transmit line looped
 //! back to its receive line:
 //!

@@ -2,12 +2,12 @@
 #![no_main]
 
 //! Hardware-accelerator integration fixture (CRC16 + AES256) — **no wiring at
-//! all**, driven by the host-side `accel_tests` runner. Both modules are pure
+//! all**, driven by the host-side `accel_test_orchestrator` runner. Both modules are pure
 //! bus peripherals: data in, data out, nothing off-chip.
 //!
 //! ```text
-//! cargo +nightly build --bin accel_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/accel_test_runner
+//! cargo +nightly build --bin accel_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/accel_test_firmware
 //! ```
 //!
 //! # What it checks

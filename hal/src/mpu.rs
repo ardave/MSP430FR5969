@@ -105,7 +105,7 @@
 //! watchdog or an NMI intervenes). Rust's linker script places all code and
 //! `.rodata` in the lower bank (`0x4400..0xFF80`), so a border at
 //! `0x1_0000` — protecting exactly the [`crate::fram::HighFram`] bank — is
-//! the safe first move, and what the `mpu_test_runner` fixture does.
+//! the safe first move, and what the `mpu_test_firmware` fixture does.
 
 use crate::mpu_seg;
 use crate::pac;
@@ -344,7 +344,7 @@ impl Mpu {
     /// One-way by design: there is no `unlock`.
     ///
     /// What happens to a register write while locked is not spelled out in
-    /// SLAU367; HW-established 2026-07-05 (`mpu_test_runner` lock probe): a
+    /// SLAU367; HW-established 2026-07-05 (`mpu_test_firmware` lock probe): a
     /// password-bracketed `MPUSEGB1` write is **silently ignored** — no PUC,
     /// borders unchanged. This driver refuses in software first
     /// ([`Error::Locked`]) so callers get an error instead of silence.

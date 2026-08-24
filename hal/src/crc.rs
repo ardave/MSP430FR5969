@@ -30,7 +30,7 @@
 //! [`kermit`](Crc::kermit), [`x25`](Crc::x25)); their published check values
 //! over `"123456789"` (0x29B1 / 0x31C3 / 0x2189 / 0x906E) are pinned by the
 //! host unit tests against the software model in `crc_soft.rs` and by the
-//! `accel_test_runner` fixture against the silicon.
+//! `accel_test_firmware` fixture against the silicon.
 //!
 //! # Byte writes through raw pointers
 //!

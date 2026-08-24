@@ -9,15 +9,15 @@
 //! A self-checking sibling of the human-facing demos: it runs three startup
 //! self-checks of the free-running counter and reports a framed pass/fail verdict
 //! over the UART backchannel (eUSCI_A0, 9600 8N1 on `/dev/cu.usbmodem11203`),
-//! driven by the host-side `timer_tests` runner. No wiring is needed — Timer0_A3
+//! driven by the host-side `timer_test_orchestrator` runner. No wiring is needed — Timer0_A3
 //! is on-chip — and, unlike the RTC/delay/deep-sleep fixtures, this one does **not**
 //! need the 32.768 kHz crystal: it runs from the DCO-derived **performance clock
 //! profile** ([`hal::clocks::configure`], SMCLK = 8 MHz), where the 16-bit counter
 //! wraps every ~8.19 ms.
 //!
 //! ```text
-//! cargo +nightly build --bin timer_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/timer_test_runner
+//! cargo +nightly build --bin timer_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/timer_test_firmware
 //! ```
 //!
 //! # What it checks

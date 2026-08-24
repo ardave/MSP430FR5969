@@ -12,7 +12,7 @@
 //! sleeps in **LPM0** between characters.
 //!
 //! Unlike every other fixture, this one is **two-directional**: the host-side
-//! `serial_irq_tests` runner *sends* bytes down the backchannel (eUSCI_A0,
+//! `serial_irq_test_orchestrator` runner *sends* bytes down the backchannel (eUSCI_A0,
 //! 9600 8N1 on `/dev/cu.usbmodem11203`) and verifies what comes back. The
 //! board echoes every received byte **plus one** — `b'A'` comes back `b'B'` —
 //! which is the point: a wire loopback or a polled echo could return the byte
@@ -20,8 +20,8 @@
 //! ISR → queue → main path can transmit `b + 1`.
 //!
 //! ```text
-//! cargo +nightly build --bin serial_irq_test_runner
-//! DSLite load ... -f target/msp430-none-elf/debug/serial_irq_test_runner
+//! cargo +nightly build --bin serial_irq_test_firmware
+//! DSLite load ... -f target/msp430-none-elf/debug/serial_irq_test_firmware
 //! ```
 //!
 //! # What the host checks

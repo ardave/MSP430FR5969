@@ -4,7 +4,7 @@
 //! FRAM read/write integration fixture for the `hal::fram` storage backends.
 //!
 //! Exercises both FRAM regions and reports over the UART backchannel (eUSCI_A0,
-//! 9600 8N1 on `/dev/cu.usbmodem11203`), driven by the host-side `fram_tests`
+//! 9600 8N1 on `/dev/cu.usbmodem11203`), driven by the host-side `fram_test_orchestrator`
 //! runner. Unlike the SPI/I2C demos this needs no wiring beyond the LaunchPad
 //! itself — FRAM is on-chip.
 //!

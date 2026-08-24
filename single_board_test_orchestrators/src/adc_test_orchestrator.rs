@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use crate::deployment;
 use crate::serial::read_line;
 
-/// The `adc_internal_test_runner` fixture reports over the backchannel at the project's
+/// The `adc_internal_test_firmware` fixture reports over the backchannel at the project's
 /// baseline 9600 8N1.
 const BAUD: u32 = 9600;
 
@@ -23,12 +23,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 /// divider and temperature sensor, so this validates the ADC end-to-end against
 /// known-good internal sources.
 fn test_internal_channels() -> Result<(), Box<dyn Error>> {
-    deployment::build_and_flash("adc_internal_test_runner")?;
+    deployment::build_and_flash("adc_internal_test_firmware")?;
     verify_self_check_burst()
 }
 
 /// Open the board's UART (8N1) and verify the fixed verdict burst the
-/// `adc_internal_test_runner` fixture transmits once per second.
+/// `adc_internal_test_firmware` fixture transmits once per second.
 ///
 /// The fixture self-checks two internal channels on-device and emits a `OK`/`OFF`
 /// verdict line for each, framed by BEGIN/END markers. A bad ADC reading flips a

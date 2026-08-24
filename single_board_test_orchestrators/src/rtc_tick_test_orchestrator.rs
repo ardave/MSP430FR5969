@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use crate::deployment;
 use crate::serial::read_line;
 
-/// The `rtc_tick_test_runner` fixture reports over the backchannel at the
+/// The `rtc_tick_test_firmware` fixture reports over the backchannel at the
 /// project's baseline 9600 8N1.
 const BAUD: u32 = 9600;
 
@@ -24,12 +24,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 /// prescaler banks, concurrent banks, a 32 Hz LPM3 wake landing exactly
 /// once, and clean disarm.
 fn test_prescaler_tick_self_check() -> Result<(), Box<dyn Error>> {
-    deployment::build_and_flash("rtc_tick_test_runner")?;
+    deployment::build_and_flash("rtc_tick_test_firmware")?;
     verify_self_check_burst()
 }
 
 /// Open the board's UART (8N1) and verify the fixed verdict burst the
-/// `rtc_tick_test_runner` fixture transmits once per second.
+/// `rtc_tick_test_firmware` fixture transmits once per second.
 fn verify_self_check_burst() -> Result<(), Box<dyn Error>> {
     let port_path = crate::serial::resolve_port()?;
 
