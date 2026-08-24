@@ -45,6 +45,43 @@
 //! unlocking so its latched `PxIFG` is delivered), then unlock, so outputs never glitch
 //! through the reboot.
 
+/// The one sleep `asm!` site every LPM entry shares: `bis` `BITS` into SR,
+/// then the `nop` the entry sequence requires.
+///
+/// Exactly one block on purpose. The options on a sleep `asm!` are
+/// load-bearing testimony about what happens *inside* the instruction (the
+/// compiler never parses the template), and the `lpm_barrier` fixture pins
+/// them behaviorally on silicon — a single site means its verdict covers
+/// every mode, and there is no second copy whose options can rot
+/// independently (`nomem` here once let the optimizer reuse pre-sleep loads
+/// after the wake; caught by that fixture 2026-07-19).
+///
+/// SAFETY (of the block): writing SR to enter a low-power mode; no stack
+/// effects of its own (the interrupt hardware's PC/SR push is baseline
+/// machine behavior at every instruction, and msp430 has no red zone). Not
+/// `nomem` — a wake ISR runs and mutates memory *inside* this instruction
+/// (the CPU halts at the `bis` and resumes after the ISR returns), so the
+/// sleep must be a full compiler barrier: a value loaded before it may not be
+/// reused after it. Not `preserves_flags` — `bis` to SR changes the status
+/// bits by design.
+///
+/// The `#` is load-bearing: it forces immediate addressing (`bis #0xD8, r2`).
+/// Without it the assembler encodes symbolic mode (`bis 0xD8(PC), r2`), which
+/// ORs the *word stored at* PC+0xD8 into SR instead of the constant — CPUOFF
+/// stays clear, the CPU never halts, and the entry falls straight through
+/// (the wake fires "immediately").
+#[inline(always)]
+fn sleep_bis<const BITS: u16>() {
+    unsafe {
+        core::arch::asm!(
+            "bis #{bits}, r2",
+            "nop",
+            bits = const BITS,
+            options(nostack),
+        );
+    }
+}
+
 /// Enter **LPM0** with interrupts enabled, and return once an interrupt has
 /// woken the CPU.
 ///
@@ -58,16 +95,7 @@
 pub fn enter_lpm0() {
     // GIE(3) | CPUOFF(4) = 0x18.
     const LPM0_GIE: u16 = (1 << 3) | (1 << 4);
-    // SAFETY: writing SR to enter a low-power mode; no memory or stack effects.
-    // Immediate addressing (`#`) is load-bearing — see `enter_lpm3`.
-    unsafe {
-        core::arch::asm!(
-            "bis #{bits}, r2",
-            "nop",
-            bits = const LPM0_GIE,
-            options(nomem, nostack),
-        );
-    }
+    sleep_bis::<LPM0_GIE>();
 }
 
 /// Enter **LPM3** with interrupts enabled, and return once an interrupt has
@@ -84,21 +112,7 @@ pub fn enter_lpm0() {
 pub fn enter_lpm3() {
     // GIE(3) | CPUOFF(4) | SCG0(6) | SCG1(7) = 0x08 | 0x10 | 0x40 | 0x80 = 0xD8.
     const LPM3_GIE: u16 = (1 << 3) | (1 << 4) | (1 << 6) | (1 << 7);
-    // SAFETY: writing SR to enter a low-power mode; no memory or stack effects.
-    // Not `preserves_flags` — `bis` to SR changes the status bits by design.
-    unsafe {
-        // The `#` is load-bearing: it forces immediate addressing (`bis #0xD8,
-        // r2`). Without it the assembler encodes symbolic mode (`bis 0xD8(PC),
-        // r2`), which ORs the *word stored at* PC+0xD8 into SR instead of the
-        // constant — CPUOFF stays clear, the CPU never halts, and `enter_lpm3`
-        // falls straight through (the timer wake fires "immediately").
-        core::arch::asm!(
-            "bis #{bits}, r2",
-            "nop",
-            bits = const LPM3_GIE,
-            options(nomem, nostack),
-        );
-    }
+    sleep_bis::<LPM3_GIE>();
 }
 
 /// Enter **LPM4** with interrupts enabled, and return once an interrupt has
@@ -114,16 +128,7 @@ pub fn enter_lpm3() {
 pub fn enter_lpm4() {
     // GIE(3) | CPUOFF(4) | OSCOFF(5) | SCG0(6) | SCG1(7) = 0xF8.
     const LPM4_GIE: u16 = (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7);
-    // SAFETY: writing SR to enter a low-power mode; no memory or stack effects.
-    // Immediate addressing (`#`) is load-bearing — see `enter_lpm3`.
-    unsafe {
-        core::arch::asm!(
-            "bis #{bits}, r2",
-            "nop",
-            bits = const LPM4_GIE,
-            options(nomem, nostack),
-        );
-    }
+    sleep_bis::<LPM4_GIE>();
 }
 
 // --- LPMx.5: regulator-off deep sleep ---------------------------------------
@@ -181,17 +186,10 @@ pub fn enter_lpm3_5(pmm: &crate::pac::Pmm) -> ! {
     set_regulator_off(pmm);
     // GIE(3) | CPUOFF(4) | SCG0(6) | SCG1(7) — LPM3 bits; REGOFF makes it 3.5.
     const LPM3_GIE: u16 = (1 << 3) | (1 << 4) | (1 << 6) | (1 << 7);
+    // An aborted entry (interrupt pending at the `bis`) services that ISR and
+    // falls through; retry forever — see the doc comment above.
     loop {
-        // SAFETY: writing SR to enter a low-power mode; no memory or stack
-        // effects. Immediate addressing (`#`) is load-bearing — see enter_lpm3.
-        unsafe {
-            core::arch::asm!(
-                "bis #{bits}, r2",
-                "nop",
-                bits = const LPM3_GIE,
-                options(nomem, nostack),
-            );
-        }
+        sleep_bis::<LPM3_GIE>();
     }
 }
 
@@ -213,16 +211,9 @@ pub fn enter_lpm4_5(pmm: &crate::pac::Pmm) -> ! {
     set_regulator_off(pmm);
     // GIE(3) | CPUOFF(4) | OSCOFF(5) | SCG0(6) | SCG1(7) — LPM4 bits + REGOFF.
     const LPM4_GIE: u16 = (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7);
+    // An aborted entry (interrupt pending at the `bis`) services that ISR and
+    // falls through; retry forever — see the doc comment above.
     loop {
-        // SAFETY: writing SR to enter a low-power mode; no memory or stack
-        // effects. Immediate addressing (`#`) is load-bearing — see enter_lpm3.
-        unsafe {
-            core::arch::asm!(
-                "bis #{bits}, r2",
-                "nop",
-                bits = const LPM4_GIE,
-                options(nomem, nostack),
-            );
-        }
+        sleep_bis::<LPM4_GIE>();
     }
 }
