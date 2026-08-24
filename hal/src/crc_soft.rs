@@ -5,7 +5,7 @@
 // (pure `core` integer arithmetic, no PAC/HAL types) so the exact same source
 // can be `include!`d by the host-side test crate in `unit_tests/`. The
 // hardware driver in `crc.rs` re-exports these functions, and the on-device
-// `accel_test_runner` fixture feeds identical data through both the silicon
+// `accel_test_firmware` fixture feeds identical data through both the silicon
 // and this model — so the model is pinned twice: against the published CRC
 // catalog constants on the host, and against the real LFSR on hardware.
 // (Regular `//` comments, not `//!`, so the file can be `include!`d mid-crate.)

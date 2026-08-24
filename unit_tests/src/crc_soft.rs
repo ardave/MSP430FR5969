@@ -1,7 +1,7 @@
 //! Host-side tests for the software CRC16-CCITT reference model.
 //!
 //! This module `include!`s the REAL source (`hal/src/crc_soft.rs`) — the model
-//! that `hal::crc` re-exports and that the on-device `accel_test_runner`
+//! that `hal::crc` re-exports and that the on-device `accel_test_firmware`
 //! fixture compares the CRC16 silicon against. The catalog check values here
 //! are the published ones (reveng's CRC catalogue), so the model is anchored
 //! to the outside world; the fixture then anchors the hardware to the model.

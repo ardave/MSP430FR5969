@@ -8,7 +8,7 @@ edition = "2024"
 # default 9600. Selects a compile-time baud constant + confirmation line in
 # src/bin/serial_uart.rs, so one source covers both rates (no second binary).
 baud_115200 = []
-# Build the `clock_speed_test_runner` fixture on the stage-1 profile
+# Build the `clock_speed_test_firmware` fixture on the stage-1 profile
 # (configure_high_speed: SMCLK 16 MHz, MCLK 8 MHz, zero wait states) instead
 # of the default configure_max_speed (MCLK = SMCLK = 16 MHz, one wait state).
 # One source covers both new clock profiles (no second binary).

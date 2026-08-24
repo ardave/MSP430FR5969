@@ -55,7 +55,7 @@
 //! it little-endian: byte *i* of the block is the low byte of word *i/2*
 //! written to `AESAKEY`/`AESADIN` (and read from `AESADOUT`). Verified
 //! against the FIPS-197 appendix-C known-answer vectors by the
-//! `accel_test_runner` fixture.
+//! `accel_test_firmware` fixture.
 //!
 //! # Example
 //!

@@ -694,7 +694,7 @@ pub enum SlaveEvent {
 /// Everything above framing is protocol: register files, command parsers,
 /// FIFO streams. The driver deliberately has no internal buffer and no
 /// transaction abstraction — it hands over [`SlaveEvent`]s and lets the
-/// application define what the bytes mean (see the `i2c_slave_test_runner`
+/// application define what the bytes mean (see the `i2c_slave_test_firmware`
 /// fixture for the classic pointer-plus-autoincrement register-file pattern).
 ///
 /// # Hardware-verification status
