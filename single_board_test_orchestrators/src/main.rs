@@ -10,6 +10,7 @@ mod ta_pwm_test_orchestrator;
 mod timer_test_orchestrator;
 mod delay_test_orchestrator;
 mod deep_sleep_test_orchestrator;
+mod lpm_barrier_test_orchestrator;
 mod lpmx5_test_orchestrator;
 mod spi_test_orchestrator;
 mod adc_test_orchestrator;
@@ -40,7 +41,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Starting Tests");
 
-    let suites: [(&str, fn() -> Result<(), Box<dyn Error>>); 27] = [
+    let suites: [(&str, fn() -> Result<(), Box<dyn Error>>); 28] = [
         ("serial_port", serial_port_test_orchestrator::run),
         ("serial_irq", serial_irq_test_orchestrator::run),
         ("dma", dma_test_orchestrator::run),
@@ -67,6 +68,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ("ta_pwm", ta_pwm_test_orchestrator::run),
         ("delay", delay_test_orchestrator::run),
         ("deep_sleep", deep_sleep_test_orchestrator::run),
+        ("lpm_barrier", lpm_barrier_test_orchestrator::run),
         ("lpmx5", lpmx5_test_orchestrator::run),
         // spi is interactive (loopback-jumper prompt); run it by name only.
     ];
